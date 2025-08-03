@@ -1,5 +1,4 @@
 use crate::player::Player;
-use crate::{MainCamera};
 use bevy::input::mouse::MouseMotion;
 use bevy::input::ButtonInput;
 use bevy::prelude::{BevyError, Component, EventReader, MouseButton, Query, Res, Transform, Vec3, With, Without};
@@ -7,6 +6,9 @@ use bevy::window::Window;
 use bevy_math::Vec2;
 
 const CAMERA_DISTANCE: f32 = 150.0;
+
+#[derive(Component)]
+pub struct MainCamera;
 
 #[derive(Component)]
 pub struct CameraController {
@@ -19,10 +21,10 @@ pub fn mouse_look(
     mut windows: Query<&mut Window>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut motion_evr: EventReader<MouseMotion>,
-    mut query: Query<(&mut CameraController, &mut Transform)>,
+    mut query: Query<(&mut CameraController)>,
 ) -> Result<(), BevyError> {
     let mut window = windows.single_mut()?;
-    let (mut controller, mut _transform) = query.single_mut()?;
+    let mut controller = query.single_mut()?;
 
     // Capture cursor when left mouse button is pressed
     if mouse_buttons.just_pressed(MouseButton::Left) {
@@ -44,8 +46,8 @@ pub fn mouse_look(
 
     // Only rotate if left mouse button is held
     if mouse_buttons.pressed(MouseButton::Left) {
-        controller.yaw += delta.x * controller.sensitivity * 0.001;
-        controller.pitch += delta.y * controller.sensitivity * 0.001;
+        controller.yaw += delta.x * controller.sensitivity;
+        controller.pitch += delta.y * controller.sensitivity;
 
         // Keep pitch within -89..89 degrees
         controller.pitch = controller.pitch.clamp(

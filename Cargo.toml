@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.16.1" }
+bevy = { version = "0.16.1", features = ["bevy_dev_tools", "bevy_mesh_picking_backend", "bevy_gizmos"] }
 bevy_rapier3d = { version = "0.30.0", features = ["dim3", "debug-render"] }
 bevy_math = "0.16.1"
