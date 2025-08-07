@@ -1,6 +1,7 @@
+use crate::component::player_character::PLAYER_HEIGHT;
+use crate::human::player::HumanPlayer;
 use bevy::prelude::*;
 use bevy::render::mesh::ConeAnchor;
-use crate::player::{Player, PLAYER_HEIGHT};
 
 // Marker — one per player
 #[derive(Component)]
@@ -13,7 +14,7 @@ pub struct ArrowAssets {
     pub material: Handle<StandardMaterial>,
 }
 
-pub fn spawn_arrow_assets(
+pub fn spawn_arrow_resource(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
@@ -21,7 +22,10 @@ pub fn spawn_arrow_assets(
     let size = 20.0;
     // Shaft and head primitives
     let mut shaft = Cylinder::new(0.025 * size, 0.4 * size).mesh().build();
-    let mut head = Cone::new(0.075 * size, 0.15 * size).mesh().anchor(ConeAnchor::Base).build();
+    let mut head = Cone::new(0.075 * size, 0.15 * size)
+        .mesh()
+        .anchor(ConeAnchor::Base)
+        .build();
 
     // Move head tip to top of shaft
     head.translate_by(Vec3::Y * 0.2 * size);
@@ -45,17 +49,21 @@ pub fn spawn_arrow_assets(
 pub fn spawn_arrows_to_players(
     mut commands: Commands,
     arrow: Res<ArrowAssets>,
-    mut players: Query<(Entity, &Transform), With<Player>>,
+    mut players: Query<(Entity, &Transform), With<HumanPlayer>>,
 ) {
     for (player, transform) in players.iter_mut() {
-        let forward = transform.rotation.mul_vec3(Vec3::Z).try_normalize().unwrap();
+        let forward = transform
+            .rotation
+            .mul_vec3(Vec3::Z)
+            .try_normalize()
+            .unwrap();
         commands.entity(player).with_children(|parent| {
             parent.spawn((
                 FacingArrow,
                 Transform {
                     translation: Vec3::Y * (PLAYER_HEIGHT * 0.5 + 2.0),
                     rotation: Quat::from_rotation_arc(Vec3::NEG_Y, forward),
-                    scale: Vec3::ONE
+                    scale: Vec3::ONE,
                 },
                 GlobalTransform::IDENTITY,
                 Mesh3d(arrow.mesh.clone()),

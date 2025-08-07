@@ -1,7 +1,7 @@
 use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::pbr::{DirectionalLight, MeshMaterial3d, StandardMaterial};
-use bevy::prelude::{default, Commands, Mesh, Mesh3d, ResMut, Transform, Vec2, Vec3};
+use bevy::prelude::{default, Commands, Mesh, Mesh3d, Name, ResMut, Transform, Vec2, Vec3};
 use bevy_math::prelude::{Cuboid, Plane3d};
 use bevy_rapier3d::dynamics::RigidBody;
 use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
@@ -18,6 +18,7 @@ pub fn setup_map(mut commands: Commands,
         CollisionGroups::new(Group::GROUP_2, Group::ALL),
         Friction::coefficient(0.5),
         RigidBody::Fixed,
+        Name::new("Ground")
     ));
 
     // Spawn Cube Obstacle
@@ -44,13 +45,21 @@ pub fn setup_map(mut commands: Commands,
         TriggerZone,
     ));
 
-    // Spawn a point light
+    // Spawn two point lights
     commands.spawn((
         DirectionalLight {
-            illuminance: 10_000.0,
+            illuminance: 8_000.0,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(0.0, 20.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(20.0, 20.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 8_000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(-20.0, 20.0, -20.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }

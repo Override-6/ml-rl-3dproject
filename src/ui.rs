@@ -1,10 +1,10 @@
+use crate::human::player::HumanPlayer;
 use bevy::color::palettes::css::GREEN;
 use bevy::prelude::{AlignSelf, Commands, Component, PositionType, Query, Text, Transform, Visibility, With};
 use bevy::text::{JustifyText, TextColor, TextFont, TextLayout};
 use bevy::ui::{Node, Val};
 use bevy_math::EulerRot;
 use bevy_rapier3d::prelude::Velocity;
-use crate::player::Player;
 
 // New component to mark our UI text
 #[derive(Component)]
@@ -44,10 +44,10 @@ pub fn setup_ui(mut commands: Commands) {
 }
 
 pub fn update_stats_text(
-    drone_query: Query<(&Transform, &Velocity), With<Player>>,
+    player_query: Query<(&Transform, &Velocity), With<HumanPlayer>>,
     mut text_query: Query<&mut Text, With<DroneStatsText>>,
 ) {
-    let Ok((transform, velocity)) = drone_query.get_single() else {
+    let Ok((transform, velocity)) = player_query.single() else {
         return;
     };
     let Ok(mut text) = text_query.single_mut() else {

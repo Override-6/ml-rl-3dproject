@@ -1,4 +1,4 @@
-use bevy::prelude::{BevyError, ChildOf, Component, Entity, EventReader, Query, ResMut, Resource, With};
+use bevy::prelude::{BevyError, ChildOf, Component, Entity, EventReader, Query, With};
 use bevy_rapier3d::prelude::*;
 
 #[derive(Component, Default, Debug)]
@@ -30,7 +30,6 @@ pub fn ground_sensor_events(
                                 ground_contact.0 = ground_contact.0.saturating_sub(1);
                             }
                         }
-                        println!("{ground_contact:?}")
                     }
                 }
             }

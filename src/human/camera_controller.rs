@@ -21,7 +21,7 @@ pub fn mouse_look(
     mut windows: Query<&mut Window>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut motion_evr: EventReader<MouseMotion>,
-    mut query: Query<(&mut CameraController)>,
+    mut query: Query<&mut CameraController>,
 ) -> Result<(), BevyError> {
     let mut window = windows.single_mut()?;
     let mut controller = query.single_mut()?;
@@ -60,24 +60,24 @@ pub fn mouse_look(
 }
 
 pub fn camera_follow(
-    drone_query: Query<&Transform, With<Player>>,
+    player_query: Query<&Transform, With<Player>>,
     mut camera_query: Query<(&mut Transform, &CameraController), (With<MainCamera>, Without<Player>)>,
 ) -> Result<(), BevyError> {
-    let drone_transform = drone_query.single()?;
+    let player_transform = player_query.single()?;
+
     let (mut camera_transform, controller) = camera_query.single_mut()?;
 
-    // Calculate camera offset using spherical coordinates
     let yaw = controller.yaw;
     let pitch = controller.pitch;
 
     let camera_position = Vec3::new(
-        drone_transform.translation.x + yaw.cos() * pitch.cos() * CAMERA_DISTANCE,
-        drone_transform.translation.y + pitch.sin() * CAMERA_DISTANCE,
-        drone_transform.translation.z + yaw.sin() * pitch.cos() * CAMERA_DISTANCE,
+        player_transform.translation.x + yaw.cos() * pitch.cos() * CAMERA_DISTANCE,
+        player_transform.translation.y + pitch.sin() * CAMERA_DISTANCE,
+        player_transform.translation.z + yaw.sin() * pitch.cos() * CAMERA_DISTANCE,
     );
 
     camera_transform.translation = camera_position;
-    camera_transform.look_at(drone_transform.translation, Vec3::Y);
+    camera_transform.look_at(player_transform.translation, Vec3::Y);
+
     Ok(())
 }
-
