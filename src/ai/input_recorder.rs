@@ -1,8 +1,8 @@
 use crate::ai::input::{Input, InputSet};
 use crate::ai::script::Script;
+use crate::simulation::TICK_RATE;
 use bevy::prelude::Resource;
 use bincode::Encode;
-use crate::game::TICK_RATE;
 
 pub type GameInputRecorder = InputRecorder<{ (20f32 * TICK_RATE) as usize }>;
 

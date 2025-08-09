@@ -1,79 +1,86 @@
-use std::ops::BitAnd;
-use crate::ai::input::{Input, InputSet};
-use crate::ai::input_recorder::{GameInputRecorder, InputRecorder};
+use crate::ai::input::Input;
 use crate::ai::script::Script;
 use crate::component::player_character::{PLAYER_HEIGHT, PLAYER_WIDTH};
 use crate::human::camera_controller::{CameraController, MainCamera};
 use crate::human::player::PLAYER_TURN_SPEED;
 use crate::player::Player;
 use crate::sensor::ground_sensor::GroundContact;
+use crate::simulation::{Simulation, DELTA_TIME};
 use bevy::app::AppExit;
-use bevy::input::ButtonInput;
 use bevy::log::error;
 use bevy::prelude::{
-    BevyError, Camera3d, Commands, Component, EventWriter, InheritedVisibility, KeyCode, Query,
-    Res, ResMut, Time, Transform, Vec3, With,
+    BevyError, Camera3d, Commands, Component, EventWriter, GlobalTransform, InheritedVisibility,
+    KeyCode, Query, Res, ResMut, Time, Transform, Vec3, With,
 };
-use bevy_rapier3d::dynamics::{AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RigidBody, Velocity};
+use bevy::utils::Parallel;
+use bevy_rapier3d::dynamics::{
+    AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RigidBody, Velocity,
+};
 use bevy_rapier3d::geometry::{Collider, CollisionGroups, Friction, Group};
-use crate::game::DELTA_TIME;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub struct AIPlayerId(pub usize);
 
 #[derive(Component)]
 pub struct AIPlayer {
-    script: Script,
     script_progress: usize,
+    pub id: AIPlayerId,
 }
 
-// TODO can be factorized with human::player.rs
-pub fn spawn_ai_player(mut commands: Commands, script: Res<Script>) {
-    commands.spawn((
-        AIPlayer {
-            script: script.clone(),
+impl AIPlayer {
+    pub fn new(id: AIPlayerId) -> Self {
+        Self {
+            id,
             script_progress: 0,
-        },
-        Player,
-        Transform::default(),
-        Velocity::default(),
-        InheritedVisibility::VISIBLE,
-        GroundContact(0),
-        RigidBody::Dynamic,
-        AdditionalMassProperties::Mass(200.0),
-        Collider::cuboid(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0, PLAYER_WIDTH / 2.0),
-        CollisionGroups::new(Group::GROUP_1, Group::ALL),
-        LockedAxes::ROTATION_LOCKED ^ LockedAxes::ROTATION_LOCKED_Y,
-        Friction {
-            coefficient: 0.0,
-            combine_rule: CoefficientCombineRule::Min,
-        },
-    ));
-
-    // Spawn camera
-    commands.spawn((
-        MainCamera,
-        CameraController {
-            sensitivity: 0.0005,
-            pitch: 30.0f32.to_radians(),
-            yaw: 45.0f32.to_radians(),
-        },
-        Camera3d::default(),
-        Transform::from_xyz(-50.0, 250.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+        }
+    }
 }
 
-pub fn follow_script(
-    mut player_query: Query<(&mut Velocity, &Transform, &GroundContact, &mut AIPlayer), With<AIPlayer>>,
+pub fn follow_all_script(
+    mut player_query: Query<
+        (&mut Velocity, &Transform, &GroundContact, &mut AIPlayer),
+        With<AIPlayer>,
+    >,
+    sim: Res<Simulation>,
     mut app_exit: EventWriter<AppExit>,
 ) -> bevy::prelude::Result<(), BevyError> {
-    let (mut velocity, transform, ground_contact, mut ai_player) = player_query.single_mut()?;
 
+    let mut should_exit: AtomicBool = AtomicBool::default();
+    player_query
+        .par_iter_mut()
+        .for_each(|(mut velocity, transform, ground_contact, mut ai_player)| {
+            let should_stop = follow_script(velocity.deref_mut(), transform, ground_contact, ai_player.deref_mut(), &sim);
+            if should_stop {
+                should_exit.store(should_stop, Ordering::Relaxed);
+            }
+        });
+
+    if should_exit.load(Ordering::Relaxed) {
+        app_exit.write(AppExit::Success);
+    }
+    
+    Ok(())
+}
+
+/// returns true if app should stop.
+fn follow_script(
+    velocity: &mut Velocity,
+    transform: &Transform,
+    ground_contact: &GroundContact,
+    ai_player: &mut AIPlayer,
+    sim: &Res<Simulation>,
+) -> bool {
     let index = ai_player.script_progress;
     ai_player.script_progress += 1;
 
-    let script = &mut ai_player.script;
+    let script = match sim.deref() {
+        Simulation::Simulation { script, .. } => script.clone(),
+        _ => unreachable!("No AI Entity should live if not in Simulation Mode!"),
+    };
 
     if index >= script.inputs.len() {
-        app_exit.write(AppExit::Success);
-        return Ok(()); // abort once script finished
+        return true; // abort once script finished
     }
 
     let input_set = script.inputs[index];
@@ -126,5 +133,5 @@ pub fn follow_script(
         }
     }
 
-    Ok(())
+    false
 }

@@ -6,5 +6,5 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Resource, Clone, Encode, Decode)]
 pub struct Script {
     pub(crate) inputs: Vec<InputSet>,
-    pub(crate) debug_info: Vec<String>
+    pub(crate) debug_info: Vec<String>,
 }

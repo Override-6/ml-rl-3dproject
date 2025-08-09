@@ -1,7 +1,7 @@
+use crate::simulation::DELTA_TIME;
 use bevy::input::ButtonInput;
 use bevy::prelude::{BevyError, Component, KeyCode, Query, Res, Time, Transform, Vec3};
 use bevy_rapier3d::dynamics::Velocity;
-use crate::game::DELTA_TIME;
 
 #[derive(Component)]
 struct Drone {
@@ -14,6 +14,7 @@ struct Drone {
 fn drone_movement(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&Drone, &mut Velocity, &Transform)>,
+    time: Res<Time>,
 ) -> Result<(), BevyError> {
     let (drone, mut velocity, transform) = query.single_mut()?;
     let mut thrust = Vec3::ZERO;
@@ -41,7 +42,7 @@ fn drone_movement(
 
     if thrust != Vec3::ZERO {
         thrust = thrust.normalize() * drone.max_thrust;
-        velocity.linvel += thrust * DELTA_TIME * drone.acceleration;
+        velocity.linvel += thrust * time.delta_secs() * drone.acceleration;
     }
 
     // Apply forces with air resistance considered

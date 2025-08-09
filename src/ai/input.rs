@@ -1,8 +1,6 @@
 use std::ops::{BitAnd, BitOr, BitOrAssign};
 
-
 pub type InputSet = u8;
-
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(u8)]

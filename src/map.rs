@@ -1,4 +1,4 @@
-use crate::objective::TriggerZone;
+use crate::sensor::objective::TriggerZone;
 use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::pbr::{DirectionalLight, MeshMaterial3d, StandardMaterial};
@@ -71,7 +71,7 @@ pub fn setup_map(
         Sensor,
         ActiveEvents::COLLISION_EVENTS,
         TriggerZone,
-        ComponentType::Objective
+        ComponentType::Objective,
     ));
 
     if let Some(meshes) = meshes.as_mut() {

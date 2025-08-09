@@ -1,13 +1,14 @@
-use crate::component::player_character::PlayerCharacter;
 use crate::map::ComponentType;
+use crate::player::Player;
 use bevy::color::palettes::basic::{BLUE, RED};
-use bevy::prelude::{BevyError, ChildOf, Children, Component, Entity, Gizmos, GlobalTransform, Query, With};
+use bevy::prelude::{
+    BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, With,
+};
 use bevy_math::Vec3;
 use bevy_rapier3d::plugin::ReadRapierContext;
 use bevy_rapier3d::prelude::QueryFilter;
 
 pub const LASER_LENGTH: f32 = 3000.0;
-
 
 /// Collection of lasers sensors that allows the player to understand where are the elements of the scene, ant which distance, and which kind of element it is.
 #[derive(Component)]
@@ -54,20 +55,31 @@ fn collect_descendants(
     }
 }
 
-pub fn update_vibrissae_lasers(
-    mut query: Query<(&mut PlayerVibrissae, &GlobalTransform, &ChildOf), With<PlayerCharacter>>,
+pub fn update_all_vibrissae_lasers(
+    mut query: Query<(Entity, &mut PlayerVibrissae, &GlobalTransform), With<Player>>,
     entity_type_query: Query<&ComponentType>,
     children_query: Query<&Children>,
     rapier_ctx: ReadRapierContext,
 ) -> bevy::prelude::Result<(), BevyError> {
-    let (mut vibrissae, player_gt, co) = query.single_mut()?;
 
+
+    query.par_iter_mut().for_each(|(entity, mut vibrissae, player_gt)|
+        update_vibrissae_lasers(entity, vibrissae.as_mut(), player_gt, entity_type_query, children_query, &rapier_ctx).unwrap()
+    );
+
+
+    Ok(())
+}
+
+pub fn update_vibrissae_lasers(entity: Entity, vibrissae: &mut PlayerVibrissae, player_gt: &GlobalTransform,
+                               entity_type_query: Query<&ComponentType>,
+                               children_query: Query<&Children>,
+                               rapier_ctx: &ReadRapierContext) -> Result<(), BevyError> {
     let origin = player_gt.translation();
     let rotation = player_gt.rotation();
 
     let mut excluded_entities = Vec::new();
-    collect_descendants(co.parent(), &children_query, &mut excluded_entities);
-
+    collect_descendants(entity, &children_query, &mut excluded_entities);
 
     let filter_predicate = |e| !excluded_entities.contains(&e);
     let filter = QueryFilter::default().predicate(&filter_predicate);
@@ -101,11 +113,13 @@ pub fn update_vibrissae_lasers(
     Ok(())
 }
 
+
 pub fn debug_render_lasers(
     mut gizmos: Gizmos,
-    query: Query<(&PlayerVibrissae, &GlobalTransform), With<PlayerCharacter>>,
+    query: Query<(&PlayerVibrissae, &GlobalTransform), With<Player>>,
 ) {
-    let (vibrissae, player_gt) = query.single().unwrap();
+    // Only debug on controlled player (which is first player)
+    let (vibrissae, player_gt) = query.iter().next().unwrap();
 
     let origin = player_gt.translation();
     let direction = player_gt.rotation();
@@ -119,7 +133,6 @@ pub fn debug_render_lasers(
             );
             continue;
         };
-
 
         gizmos.line(
             origin,

@@ -1,5 +1,5 @@
 use crate::component::player_character::PLAYER_HEIGHT;
-use crate::human::player::HumanPlayer;
+use crate::player::Player;
 use bevy::prelude::*;
 use bevy::render::mesh::ConeAnchor;
 
@@ -51,7 +51,7 @@ pub fn spawn_arrow_resource(
 pub fn spawn_arrows_to_players(
     mut commands: Commands,
     arrow: Option<Res<ArrowAssets>>,
-    mut players: Query<(Entity, &Transform), With<HumanPlayer>>,
+    mut players: Query<(Entity, &Transform), With<Player>>,
 ) {
     let Some(arrow) = arrow else { return };
 

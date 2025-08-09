@@ -7,7 +7,6 @@ pub struct GroundContact(pub u32);
 #[derive(Component)]
 pub struct GroundSensor;
 
-
 pub fn ground_sensor_events(
     mut contact_events: EventReader<CollisionEvent>,
     sensor_query: Query<(Entity, &ChildOf), With<GroundSensor>>,

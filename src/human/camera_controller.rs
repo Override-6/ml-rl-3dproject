@@ -1,7 +1,7 @@
 use crate::player::Player;
 use bevy::input::mouse::MouseMotion;
 use bevy::input::ButtonInput;
-use bevy::prelude::{BevyError, Component, EventReader, MouseButton, Query, Res, Transform, Vec3, With, Without};
+use bevy::prelude::{BevyError, Camera3d, Commands, Component, EventReader, MouseButton, Query, Res, Transform, Vec3, With, Without};
 use bevy::window::Window;
 use bevy_math::Vec2;
 
@@ -15,6 +15,19 @@ pub struct CameraController {
     pub(crate) sensitivity: f32,
     pub(crate) pitch: f32,
     pub(crate) yaw: f32,
+}
+
+pub fn spawn_camera_controller(mut commands: Commands) {
+    commands.spawn((
+        MainCamera,
+        CameraController {
+            sensitivity: 0.0005,
+            pitch: 30.0f32.to_radians(),
+            yaw: 45.0f32.to_radians(),
+        },
+        Camera3d::default(),
+        Transform::from_xyz(-50.0, 250.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 }
 
 pub fn mouse_look(
@@ -50,10 +63,9 @@ pub fn mouse_look(
         controller.pitch += delta.y * controller.sensitivity;
 
         // Keep pitch within -89..89 degrees
-        controller.pitch = controller.pitch.clamp(
-            -89.0f32.to_radians(),
-            89.0f32.to_radians()
-        );
+        controller.pitch = controller
+            .pitch
+            .clamp(-89.0f32.to_radians(), 89.0f32.to_radians());
     }
 
     Ok(())
@@ -61,9 +73,13 @@ pub fn mouse_look(
 
 pub fn camera_follow(
     player_query: Query<&Transform, With<Player>>,
-    mut camera_query: Query<(&mut Transform, &CameraController), (With<MainCamera>, Without<Player>)>,
+    mut camera_query: Query<
+        (&mut Transform, &CameraController),
+        (With<MainCamera>, Without<Player>),
+    >,
 ) -> Result<(), BevyError> {
-    let player_transform = player_query.single()?;
+    // Attach to the first player
+    let player_transform = player_query.iter().next().ok_or_else(|| BevyError::from("No player found."))?;
 
     let (mut camera_transform, controller) = camera_query.single_mut()?;
 
