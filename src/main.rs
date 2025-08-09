@@ -67,18 +67,19 @@ fn create_app(head: bool, script: Option<Script>) -> App {
             watch_for_changes_override: Some(true),
             ..default()
         }));
-        app.add_plugins((RapierDebugRenderPlugin::default(),))
-            .add_systems(Update, (mouse_look, camera_follow, update_stats_text))
+        app.add_plugins((RapierDebugRenderPlugin::default()))
+            .add_systems(Startup, setup_ui)
+            .add_systems(Update, (mouse_look, camera_follow.after(PhysicsSet::Writeback), update_stats_text))
             .add_systems(
-                FixedUpdate,
-                debug_render_lasers.after(update_vibrissae_lasers),
+                Update,
+                debug_render_lasers.after(update_vibrissae_lasers).after(PhysicsSet::Writeback),
             );
     } else {
         app.add_plugins(MinimalPlugins);
     }
 
     app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-        .add_systems(Startup, (setup, setup_ui, setup_map, spawn_arrow_resource))
+        .add_systems(Startup, (setup, setup_map, spawn_arrow_resource))
         .add_systems(
             PostStartup,
             (
@@ -115,7 +116,9 @@ fn create_app(head: bool, script: Option<Script>) -> App {
     app
 }
 
-fn run_simulation(mut app: App) {}
+fn run_simulation(mut app: App) {
+    app.run();
+}
 
 fn setup(mut commands: Commands) {
     commands.insert_resource(InTriggerZone(false));
