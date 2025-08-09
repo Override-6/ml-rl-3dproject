@@ -16,9 +16,11 @@ pub struct ArrowAssets {
 
 pub fn spawn_arrow_resource(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    mats: Option<ResMut<Assets<StandardMaterial>>>,
 ) {
+    let Some(mut meshes) = meshes else { return };
+    let Some(mut mats) = mats else { return };
     let size = 20.0;
     // Shaft and head primitives
     let mut shaft = Cylinder::new(0.025 * size, 0.4 * size).mesh().build();
@@ -48,9 +50,11 @@ pub fn spawn_arrow_resource(
 
 pub fn spawn_arrows_to_players(
     mut commands: Commands,
-    arrow: Res<ArrowAssets>,
+    arrow: Option<Res<ArrowAssets>>,
     mut players: Query<(Entity, &Transform), With<HumanPlayer>>,
 ) {
+    let Some(arrow) = arrow else { return };
+
     for (player, transform) in players.iter_mut() {
         let forward = transform
             .rotation

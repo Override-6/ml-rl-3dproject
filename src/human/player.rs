@@ -1,5 +1,5 @@
 use crate::ai::input::{Input, InputSet};
-use crate::ai::input_recorder::InputRecorder;
+use crate::ai::input_recorder::{GameInputRecorder, InputRecorder};
 use crate::component::player_character::{PlayerCharacter, PLAYER_HEIGHT, PLAYER_WIDTH};
 use crate::human::camera_controller::{CameraController, MainCamera};
 use crate::player::Player;
@@ -10,15 +10,15 @@ use bevy::prelude::{
     BevyError, Camera3d, Commands, Component, KeyCode, Query, Res, ResMut, Time, Transform, Vec3,
     With,
 };
-use bevy_rapier3d::dynamics::{AdditionalMassProperties, CoefficientCombineRule, RigidBody, Velocity};
+use bevy_rapier3d::dynamics::{AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RigidBody, Velocity};
 use bevy_rapier3d::geometry::{Collider, CollisionGroups, Friction, Group};
+use crate::game::DELTA_TIME;
 
 #[derive(Component)]
 pub struct HumanPlayer;
 
 pub const PLAYER_TURN_SPEED: f32 = 50.0;
 
-pub const RAYCASTS_DEBUG_DISPLAY_DISTANCE: f32 = 3000.0;
 
 pub fn spawn_human_player(mut commands: Commands) {
     // Spawn player entity
@@ -29,6 +29,8 @@ pub fn spawn_human_player(mut commands: Commands) {
         Velocity::default(),
         InheritedVisibility::VISIBLE,
         GroundContact(0),
+
+        LockedAxes::ROTATION_LOCKED ^ LockedAxes::ROTATION_LOCKED_Y,
 
         RigidBody::Dynamic,
         AdditionalMassProperties::Mass(200.0),
@@ -54,10 +56,9 @@ pub fn spawn_human_player(mut commands: Commands) {
 }
 
 pub fn move_player(
-    time: Res<Time>,
     kb: Res<ButtonInput<KeyCode>>,
     mut player_query: Query<(&mut Velocity, &Transform, &GroundContact), With<HumanPlayer>>,
-    mut input_recorder: ResMut<InputRecorder<100>>,
+    mut input_recorder: ResMut<GameInputRecorder>,
     mut app_exit: EventWriter<AppExit>,
 ) -> Result<(), BevyError> {
 
@@ -109,7 +110,7 @@ pub fn move_player(
         set |= Input::TurnRight;
     }
 
-    velocity.angvel.y = yaw * time.delta_secs();
+    velocity.angvel.y = yaw * DELTA_TIME;
 
     // Jump
     if kb.pressed(KeyCode::Space) && ground_contact.0 > 0 {

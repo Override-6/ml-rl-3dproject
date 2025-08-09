@@ -1,6 +1,6 @@
 use std::ops::BitAnd;
 use crate::ai::input::{Input, InputSet};
-use crate::ai::input_recorder::InputRecorder;
+use crate::ai::input_recorder::{GameInputRecorder, InputRecorder};
 use crate::ai::script::Script;
 use crate::component::player_character::{PLAYER_HEIGHT, PLAYER_WIDTH};
 use crate::human::camera_controller::{CameraController, MainCamera};
@@ -14,10 +14,9 @@ use bevy::prelude::{
     BevyError, Camera3d, Commands, Component, EventWriter, InheritedVisibility, KeyCode, Query,
     Res, ResMut, Time, Transform, Vec3, With,
 };
-use bevy_rapier3d::dynamics::{
-    AdditionalMassProperties, CoefficientCombineRule, RigidBody, Velocity,
-};
+use bevy_rapier3d::dynamics::{AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RigidBody, Velocity};
 use bevy_rapier3d::geometry::{Collider, CollisionGroups, Friction, Group};
+use crate::game::DELTA_TIME;
 
 #[derive(Component)]
 pub struct AIPlayer {
@@ -41,6 +40,7 @@ pub fn spawn_ai_player(mut commands: Commands, script: Res<Script>) {
         AdditionalMassProperties::Mass(200.0),
         Collider::cuboid(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0, PLAYER_WIDTH / 2.0),
         CollisionGroups::new(Group::GROUP_1, Group::ALL),
+        LockedAxes::ROTATION_LOCKED ^ LockedAxes::ROTATION_LOCKED_Y,
         Friction {
             coefficient: 0.0,
             combine_rule: CoefficientCombineRule::Min,
@@ -61,9 +61,7 @@ pub fn spawn_ai_player(mut commands: Commands, script: Res<Script>) {
 }
 
 pub fn follow_script(
-    time: Res<Time>,
     mut player_query: Query<(&mut Velocity, &Transform, &GroundContact, &mut AIPlayer), With<AIPlayer>>,
-    mut input_recorder: ResMut<InputRecorder<100>>,
     mut app_exit: EventWriter<AppExit>,
 ) -> bevy::prelude::Result<(), BevyError> {
     let (mut velocity, transform, ground_contact, mut ai_player) = player_query.single_mut()?;
@@ -72,6 +70,12 @@ pub fn follow_script(
     ai_player.script_progress += 1;
 
     let script = &mut ai_player.script;
+
+    if index >= script.inputs.len() {
+        app_exit.write(AppExit::Success);
+        return Ok(()); // abort once script finished
+    }
+
     let input_set = script.inputs[index];
 
     let mut move_input = Vec3::ZERO;
@@ -111,7 +115,7 @@ pub fn follow_script(
         yaw -= PLAYER_TURN_SPEED;
     }
 
-    velocity.angvel.y = yaw * time.delta_secs();
+    velocity.angvel.y = yaw * DELTA_TIME;
 
     // Jump
     if input_set & Input::Jump != 0 {
@@ -120,13 +124,6 @@ pub fn follow_script(
         } else {
             velocity.linvel.y += 400.0;
         }
-    }
-
-    println!("{:?}", input_set);
-
-    if input_recorder.is_full() {
-        app_exit.write(AppExit::Success);
-        return Ok(());
     }
 
     Ok(())

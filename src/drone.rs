@@ -1,6 +1,7 @@
 use bevy::input::ButtonInput;
 use bevy::prelude::{BevyError, Component, KeyCode, Query, Res, Time, Transform, Vec3};
 use bevy_rapier3d::dynamics::Velocity;
+use crate::game::DELTA_TIME;
 
 #[derive(Component)]
 struct Drone {
@@ -13,7 +14,6 @@ struct Drone {
 fn drone_movement(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&Drone, &mut Velocity, &Transform)>,
-    time: Res<Time>,
 ) -> Result<(), BevyError> {
     let (drone, mut velocity, transform) = query.single_mut()?;
     let mut thrust = Vec3::ZERO;
@@ -41,7 +41,7 @@ fn drone_movement(
 
     if thrust != Vec3::ZERO {
         thrust = thrust.normalize() * drone.max_thrust;
-        velocity.linvel += thrust * time.delta_secs() * drone.acceleration;
+        velocity.linvel += thrust * DELTA_TIME * drone.acceleration;
     }
 
     // Apply forces with air resistance considered
@@ -49,22 +49,22 @@ fn drone_movement(
     // let effective_thrust = thrust * (1.0 - speed / drone.max_speed);
     //
     // if thrust != Vec3::ZERO {
-    //     velocity.linvel += effective_thrust * time.delta_secs();
+    //     velocity.linvel += effective_thrust * DELTA_TIME;
     // }
 
     // Rotation controls
     let mut rotation = Vec3::ZERO;
     if keyboard_input.pressed(KeyCode::ArrowLeft) {
-        rotation.y += drone.rotation_speed * time.delta_secs();
+        rotation.y += drone.rotation_speed * DELTA_TIME;
     }
     if keyboard_input.pressed(KeyCode::ArrowRight) {
-        rotation.y -= drone.rotation_speed * time.delta_secs();
+        rotation.y -= drone.rotation_speed * DELTA_TIME;
     }
     if keyboard_input.pressed(KeyCode::ArrowUp) {
-        rotation.x -= drone.rotation_speed * time.delta_secs();
+        rotation.x -= drone.rotation_speed * DELTA_TIME;
     }
     if keyboard_input.pressed(KeyCode::ArrowDown) {
-        rotation.x += drone.rotation_speed * time.delta_secs();
+        rotation.x += drone.rotation_speed * DELTA_TIME;
     }
     velocity.angvel += rotation;
 

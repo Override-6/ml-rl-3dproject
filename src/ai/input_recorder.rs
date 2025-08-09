@@ -2,6 +2,9 @@ use crate::ai::input::{Input, InputSet};
 use crate::ai::script::Script;
 use bevy::prelude::Resource;
 use bincode::Encode;
+use crate::game::TICK_RATE;
+
+pub type GameInputRecorder = InputRecorder<{ (20f32 * TICK_RATE) as usize }>;
 
 #[derive(Debug, Resource, Encode)]
 pub struct InputRecorder<const N: usize> {
@@ -10,7 +13,11 @@ pub struct InputRecorder<const N: usize> {
     len: usize,
 }
 
-
+impl Default for GameInputRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<const N: usize> InputRecorder<N> {
     pub fn new() -> Self {

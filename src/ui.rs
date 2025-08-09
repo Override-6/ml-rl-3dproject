@@ -1,4 +1,4 @@
-use crate::human::player::HumanPlayer;
+use crate::player::Player;
 use bevy::color::palettes::css::GREEN;
 use bevy::prelude::{AlignSelf, Commands, Component, PositionType, Query, Text, Transform, Visibility, With};
 use bevy::text::{JustifyText, TextColor, TextFont, TextLayout};
@@ -44,7 +44,7 @@ pub fn setup_ui(mut commands: Commands) {
 }
 
 pub fn update_stats_text(
-    player_query: Query<(&Transform, &Velocity), With<HumanPlayer>>,
+    player_query: Query<(&Transform, &Velocity), With<Player>>,
     mut text_query: Query<&mut Text, With<DroneStatsText>>,
 ) {
     let Ok((transform, velocity)) = player_query.single() else {
@@ -61,7 +61,7 @@ pub fn update_stats_text(
 
     text.0 = format!(
         "Position: {:>5.1}, {:>5.1}, {:>5.1}\n\
-        Rotation: {:>5.1}°, {:>5.1}°, {:>5.1}°\n\
+        Rotation: {:>5.1}, {:>5.1}, {:>5.1}\n\
         Velocity: {:>5.1}, {:>5.1}, {:>5.1}\n\
         Angular: {:>5.1}, {:>5.1}, {:>5.1}",
         position.x,
@@ -77,4 +77,5 @@ pub fn update_stats_text(
         ang_vel.y,
         ang_vel.z
     );
+
 }
