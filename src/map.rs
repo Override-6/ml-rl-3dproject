@@ -37,7 +37,7 @@ pub fn setup_map(
             meshes.add(Plane3d::new(Vec3::Y, Vec2::new(500.0, 500.0))),
         ));
     }
-    if let Some(mut materials) = materials.as_mut() {
+    if let Some(materials) = materials.as_mut() {
         plane.insert(MeshMaterial3d::from(
             materials.add(Color::srgb(1.0, 1.0, 1.0)),
         ));
@@ -56,7 +56,7 @@ pub fn setup_map(
     if let Some(meshes) = meshes.as_mut() {
         cube.insert(Mesh3d::from(meshes.add(Cuboid::new(50.0, 50.0, 50.0))));
     }
-    if let Some(mut materials) = materials.as_mut() {
+    if let Some(materials) = materials.as_mut() {
         cube.insert(MeshMaterial3d::from(
             materials.add(Color::srgb(0.5, 0.5, 0.1)),
         ));
@@ -77,7 +77,7 @@ pub fn setup_map(
     if let Some(meshes) = meshes.as_mut() {
         objective.insert(Mesh3d::from(meshes.add(Cuboid::new(50.0, 50.0, 50.0))));
     }
-    if let Some(mut materials) = materials.as_mut() {
+    if let Some(materials) = materials.as_mut() {
         objective.insert(MeshMaterial3d::from(
             materials.add(Color::srgba(0.0, 1.0, 0.0, 0.3)),
         ));

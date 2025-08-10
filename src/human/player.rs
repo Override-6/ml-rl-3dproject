@@ -1,12 +1,11 @@
 use crate::ai::input::{Input, InputSet};
 use crate::ai::input_recorder::GameInputRecorder;
-use crate::player::Player;
 use crate::sensor::ground_sensor::GroundContact;
 use crate::simulation::DELTA_TIME;
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy::prelude::{
-    BevyError, Commands, Component, KeyCode, Query, Res, ResMut, Transform, Vec3, With,
+    BevyError, Component, KeyCode, Query, Res, ResMut, Transform, Vec3, With,
 };
 use bevy_rapier3d::dynamics::Velocity;
 

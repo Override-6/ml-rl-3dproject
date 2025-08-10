@@ -68,6 +68,7 @@ pub fn spawn_player_character(
                 GroundSensor,
                 Collider::cuboid(PLAYER_WIDTH / 2.0, 0.1, PLAYER_WIDTH / 2.0),
                 Sensor,
+                CollisionGroups::new(Group::GROUP_1, Group::ALL ^ Group::GROUP_1),
                 ActiveEvents::COLLISION_EVENTS,
                 Transform::from_xyz(0.0, -(PLAYER_HEIGHT / 2.0), 0.0),
                 GlobalTransform::default(),

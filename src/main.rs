@@ -17,12 +17,10 @@ use crate::component::player_character::spawn_player_character;
 use crate::human::camera_controller::{camera_follow, mouse_look, spawn_camera_controller};
 use crate::human::player::move_player;
 use crate::map::setup_map;
-use sensor::objective::{check_trigger_zone, InTriggerZone};
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
-use crate::simulation::{spawn_players, Simulation, DELTA_TIME, TICK_RATE};
+use crate::simulation::{DELTA_TIME, Simulation, TICK_RATE, spawn_players};
 use crate::ui::{setup_ui, update_stats_text};
-use bevy::app::ScheduleRunnerPlugin;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::pbr::DirectionalLightShadowMap;
@@ -30,17 +28,26 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use bevy_rapier3d::rapier::dynamics::IntegrationParameters;
 use bincode::encode_into_slice;
+use sensor::objective::{InTriggerZone, check_trigger_zone};
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::time::Duration;
+
+const NB_AI_PLAYERS: usize = 1000;
 
 #[derive(ScheduleLabel, Clone, Hash, PartialEq, Eq, Debug)]
 pub struct PostPhysics;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum HeadMode {
+    HeadRealTime,
+    HeadRush,
+    None,
+}
+
 fn main() {
     let script = read_script_from_file("script.bin");
-    let app = create_app(true, script);
+    let app = create_app(HeadMode::HeadRush, script);
     run_simulation(app)
 }
 
@@ -60,16 +67,22 @@ fn read_script_from_file(file: &str) -> Option<Script> {
     script
 }
 
-fn create_app(head: bool, script: Option<Script>) -> App {
+fn create_app(head: HeadMode, script: Option<Script>) -> App {
     let mut app = App::new();
 
-    if head {
-        app.add_plugins(DefaultPlugins.set(AssetPlugin {
-            watch_for_changes_override: Some(true),
-            ..default()
-        }));
-        app.add_plugins(RapierDebugRenderPlugin::default())
-            .add_systems(Startup, (setup_ui, spawn_arrow_resource, spawn_camera_controller))
+    // if true, rush as fast as possible
+    let rush = head != HeadMode::HeadRealTime;
+
+    if head == HeadMode::None {
+        app.add_plugins(MinimalPlugins);
+    } else {
+        app.add_plugins(DefaultPlugins)
+            .add_plugins(RapierDebugRenderPlugin::default())
+            .add_plugins(FrameTimeDiagnosticsPlugin::default())
+            .add_systems(
+                Startup,
+                (setup_ui, spawn_arrow_resource, spawn_camera_controller),
+            )
             .add_systems(
                 Update,
                 (
@@ -84,18 +97,10 @@ fn create_app(head: bool, script: Option<Script>) -> App {
                     .after(update_all_vibrissae_lasers)
                     .after(PhysicsSet::Writeback),
             )
-            .add_plugins(FrameTimeDiagnosticsPlugin::default());
-        app.insert_resource(Time::<Fixed>::from_hz(TICK_RATE as f64));
-        app.add_systems(
-            PostStartup,
-            (spawn_arrows_to_players.after(spawn_player_character),),
-        );
-    } else {
-        app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::ZERO)));
-        app.insert_resource(TimestepMode::Fixed {
-            dt: DELTA_TIME,
-            substeps: 1,
-        });
+            .add_systems(
+                PostStartup,
+                spawn_arrows_to_players.after(spawn_player_character),
+            );
     }
 
     app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
@@ -106,14 +111,6 @@ fn create_app(head: bool, script: Option<Script>) -> App {
                 setup_map,
                 spawn_players,
                 spawn_player_character.after(spawn_players),
-            ),
-        )
-        .add_systems(
-            FixedUpdate,
-            (
-                ground_sensor_events,
-                check_trigger_zone,
-                update_all_vibrissae_lasers,
             ),
         )
         .add_systems(Update, cleanup_on_exit)
@@ -131,17 +128,54 @@ fn create_app(head: bool, script: Option<Script>) -> App {
         )
         .insert_resource(DirectionalLightShadowMap { size: 100 });
 
+    if rush {
+        app.insert_resource(TimestepMode::Fixed {
+            dt: DELTA_TIME,
+            substeps: 1,
+        });
+    } else {
+        // run relative to a fixed tick rate
+        app.insert_resource(Time::<Fixed>::from_hz(TICK_RATE as f64));
+        app.insert_resource(TimestepMode::Variable {
+            max_dt: DELTA_TIME,
+            time_scale: 1.0,
+            substeps: 1,
+        });
+    };
+
+    macro_rules! add_game_logic_systems {
+        ($systems: expr) => {
+            if rush {
+                app.add_systems(Update, $systems)
+            } else {
+                app.add_systems(FixedUpdate, $systems)
+            }
+        };
+    }
+
     if let Some(script) = script {
         app.insert_resource(Simulation::Simulation {
             script,
-            num_ai_players: 5,
+            num_ai_players: NB_AI_PLAYERS,
         });
-        app.add_systems(FixedUpdate, follow_all_script);
+        add_game_logic_systems!(follow_all_script);
     } else {
+        assert_eq!(
+            head,
+            HeadMode::HeadRealTime,
+            "Must be in HeadMode::RealTime if you want to record inputs"
+        );
         app.insert_resource(GameInputRecorder::new());
         app.insert_resource(Simulation::Game);
-        app.add_systems(FixedUpdate, move_player);
+        add_game_logic_systems!(move_player);
     }
+
+    add_game_logic_systems!((
+        ground_sensor_events,
+        check_trigger_zone,
+        update_all_vibrissae_lasers,
+    ));
+
     app
 }
 

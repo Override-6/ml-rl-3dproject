@@ -1,24 +1,16 @@
 use crate::ai::input::Input;
-use crate::ai::script::Script;
-use crate::component::player_character::{PLAYER_HEIGHT, PLAYER_WIDTH};
-use crate::human::camera_controller::{CameraController, MainCamera};
 use crate::human::player::PLAYER_TURN_SPEED;
-use crate::player::Player;
 use crate::sensor::ground_sensor::GroundContact;
 use crate::simulation::{Simulation, DELTA_TIME};
 use bevy::app::AppExit;
 use bevy::log::error;
 use bevy::prelude::{
-    BevyError, Camera3d, Commands, Component, EventWriter, GlobalTransform, InheritedVisibility,
-    KeyCode, Query, Res, ResMut, Time, Transform, Vec3, With,
+    BevyError, Component, EventWriter, Query, Res, Transform, Vec3, With,
 };
-use bevy::utils::Parallel;
-use bevy_rapier3d::dynamics::{
-    AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RigidBody, Velocity,
-};
-use bevy_rapier3d::geometry::{Collider, CollisionGroups, Friction, Group};
+use bevy_rapier3d::prelude::Velocity;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
+use bevy::time::Time;
 
 pub struct AIPlayerId(pub usize);
 
@@ -44,9 +36,10 @@ pub fn follow_all_script(
     >,
     sim: Res<Simulation>,
     mut app_exit: EventWriter<AppExit>,
+    time: Res<Time>
 ) -> bevy::prelude::Result<(), BevyError> {
 
-    let mut should_exit: AtomicBool = AtomicBool::default();
+    let should_exit: AtomicBool = AtomicBool::default();
     player_query
         .par_iter_mut()
         .for_each(|(mut velocity, transform, ground_contact, mut ai_player)| {
@@ -59,7 +52,7 @@ pub fn follow_all_script(
     if should_exit.load(Ordering::Relaxed) {
         app_exit.write(AppExit::Success);
     }
-    
+
     Ok(())
 }
 
