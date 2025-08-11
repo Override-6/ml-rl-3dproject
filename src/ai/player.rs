@@ -1,16 +1,16 @@
 use crate::ai::input::Input;
-use crate::human::player::PLAYER_TURN_SPEED;
 use crate::sensor::ground_sensor::GroundContact;
 use crate::simulation::{Simulation, DELTA_TIME};
+use avian3d::prelude::{AngularVelocity, LinearVelocity};
 use bevy::app::AppExit;
 use bevy::log::error;
 use bevy::prelude::{
     BevyError, Component, EventWriter, Query, Res, Transform, Vec3, With,
 };
-use bevy_rapier3d::prelude::Velocity;
+use bevy::time::Time;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use bevy::time::Time;
+use crate::player::{PLAYER_JUMP_SPEED, PLAYER_TURN_SPEED};
 
 pub struct AIPlayerId(pub usize);
 
@@ -31,7 +31,7 @@ impl AIPlayer {
 
 pub fn follow_all_script(
     mut player_query: Query<
-        (&mut Velocity, &Transform, &GroundContact, &mut AIPlayer),
+        (&mut LinearVelocity, &mut AngularVelocity, &Transform, &GroundContact, &mut AIPlayer),
         With<AIPlayer>,
     >,
     sim: Res<Simulation>,
@@ -42,8 +42,8 @@ pub fn follow_all_script(
     let should_exit: AtomicBool = AtomicBool::default();
     player_query
         .par_iter_mut()
-        .for_each(|(mut velocity, transform, ground_contact, mut ai_player)| {
-            let should_stop = follow_script(velocity.deref_mut(), transform, ground_contact, ai_player.deref_mut(), &sim);
+        .for_each(|(mut linvel, mut angvel, transform, ground_contact, mut ai_player)| {
+            let should_stop = follow_script(linvel.deref_mut(), angvel.deref_mut(), transform, ground_contact, ai_player.deref_mut(), &sim, &time);
             if should_stop {
                 should_exit.store(should_stop, Ordering::Relaxed);
             }
@@ -58,11 +58,13 @@ pub fn follow_all_script(
 
 /// returns true if app should stop.
 fn follow_script(
-    velocity: &mut Velocity,
+    linvel: &mut LinearVelocity,
+    angvel: &mut AngularVelocity,
     transform: &Transform,
     ground_contact: &GroundContact,
     ai_player: &mut AIPlayer,
     sim: &Res<Simulation>,
+    time: &Time
 ) -> bool {
     let index = ai_player.script_progress;
     ai_player.script_progress += 1;
@@ -103,8 +105,8 @@ fn follow_script(
 
     // Apply movement relative to player's facing direction
     let rotated_input = transform.rotation * move_input;
-    velocity.linvel.x = rotated_input.x * speed;
-    velocity.linvel.z = rotated_input.z * speed;
+    linvel.x = rotated_input.x * speed;
+    linvel.z = rotated_input.z * speed;
 
     // Yaw rotation (turn left or right)
     let mut yaw = 0.0;
@@ -115,14 +117,14 @@ fn follow_script(
         yaw -= PLAYER_TURN_SPEED;
     }
 
-    velocity.angvel.y = yaw * DELTA_TIME;
+    angvel.y = yaw;
 
     // Jump
     if input_set & Input::Jump != 0 {
-        if ground_contact.0 == 0 {
-            error!("Received jump instruction while not on ground!")
+        if ground_contact.0 {
+            linvel.y += PLAYER_JUMP_SPEED;
         } else {
-            velocity.linvel.y += 400.0;
+            error!("Received jump instruction while not on ground!")
         }
     }
 

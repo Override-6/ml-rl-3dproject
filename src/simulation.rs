@@ -4,9 +4,18 @@ use crate::human::player::HumanPlayer;
 use crate::player::Player;
 use bevy::prelude::{Commands, Res, Resource};
 use std::ops::Deref;
+use avian3d::prelude::PhysicsLayer;
 
 pub const TICK_RATE: f32 = 5.0;
 pub const DELTA_TIME: f32 = 1.0 / TICK_RATE;
+
+#[derive(PhysicsLayer, Default)]
+pub enum GameLayer {
+    #[default]
+    World,
+    Player,
+    Laser,
+}
 
 #[derive(Resource)]
 pub enum Simulation {

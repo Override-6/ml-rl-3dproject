@@ -1,27 +1,27 @@
 use crate::map::ComponentType;
 use crate::player::Player;
-use bevy::color::palettes::basic::{BLUE, RED};
-use bevy::ecs::relationship::RelationshipSourceCollection;
-use bevy::prelude::{
-    BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, With,
-};
-use bevy_math::Vec3;
-use bevy_rapier3d::plugin::ReadRapierContext;
-use bevy_rapier3d::prelude::QueryFilter;
+use crate::simulation::GameLayer;
+use avian3d::prelude::{DebugRender, RayHits};
+use avian3d::spatial_query::{RayCaster, SpatialQueryFilter};
+use bevy::color::palettes::basic::RED;
+use bevy::prelude::{BevyError, Children, Commands, Component, Entity, Gizmos, Query, With};
+use bevy_math::{Dir3, Vec3};
+use std::iter::once;
 
 pub const LASER_LENGTH: f32 = 3000.0;
 
 /// Collection of lasers sensors that allows the player to understand where are the elements of the scene, ant which distance, and which kind of element it is.
 #[derive(Component)]
 pub struct PlayerVibrissae {
-    /// The lasers directions of the player's sensor
-    pub lasers: Vec<LaserSensor>,
+    /// The other lasers directions of the player's sensor.
+    /// First laser will always be the ground sensor (automatically added)
+    lasers: Vec<LaserSensor>,
 }
 
 impl PlayerVibrissae {
-    pub fn from_vec(set: Vec<Vec3>) -> Self {
-        let lasers = set
-            .into_iter()
+    pub fn from_vec(set: Vec<Dir3>) -> Self {
+        let lasers = once(Dir3::NEG_Y)
+            .chain(set.into_iter())
             .map(|direction| LaserSensor {
                 direction,
                 hit: None,
@@ -29,18 +29,30 @@ impl PlayerVibrissae {
             .collect();
         Self { lasers }
     }
+
+    pub fn lasers(&self) -> &[LaserSensor] {
+        &self.lasers
+    }
+
+    pub fn ground_sensor(&self) -> &LaserSensor {
+        &self.lasers[0]
+    }
 }
 
+#[derive(Component, Debug)]
+pub struct LaserId(usize);
+
 pub struct LaserSensor {
-    pub direction: Vec3,
+    pub direction: Dir3,
     pub hit: Option<LaserHit>,
 }
 
+#[derive(Debug, Clone)]
 pub struct LaserHit {
-    entity_type: ComponentType,
-    distance: f32,
+    pub entity_type: ComponentType,
+    pub distance: f32,
     // may not be given to AI Model, more for debug purposes
-    point: Vec3,
+    pub point: Vec3,
 }
 
 fn collect_descendants(
@@ -56,50 +68,67 @@ fn collect_descendants(
     }
 }
 
+pub fn spawn_all_lasers(
+    mut query: Query<(Entity, &mut PlayerVibrissae), With<Player>>,
+    mut commands: Commands,
+) {
+    let filter = SpatialQueryFilter::from_mask(GameLayer::World);
+
+    for (entity, player_vibrissae) in query.iter_mut() {
+        let mut entity = commands.entity(entity);
+        for (id, laser) in player_vibrissae.lasers.iter().enumerate() {
+            entity.with_children(|parent| {
+                parent.spawn((
+                    LaserId(id),
+                    RayCaster::new(Vec3::ZERO, laser.direction)
+                        .with_max_hits(1)
+                        .with_max_distance(LASER_LENGTH)
+                        .with_query_filter(filter.clone()),
+                    DebugRender::none()
+                ));
+            });
+        }
+    }
+}
+
 pub fn update_all_vibrissae_lasers(
-    mut query: Query<(Entity, &mut PlayerVibrissae, &GlobalTransform), With<Player>>,
+    mut query: Query<(&mut PlayerVibrissae, &Children), With<Player>>,
     entity_type_query: Query<&ComponentType>,
-    children_query: Query<&Children>,
-    player_query: Query<&Player>,
-    rapier_ctx: ReadRapierContext,
+    ray_cast_query: Query<(&RayCaster, &RayHits, &LaserId)>,
 ) -> bevy::prelude::Result<(), BevyError> {
-
-
-    query.par_iter_mut().for_each(|(entity, mut vibrissae, player_gt)|
-        update_vibrissae_lasers(entity, vibrissae.as_mut(), player_gt, entity_type_query, player_query, children_query, &rapier_ctx).unwrap()
-    );
-
+    query
+        .par_iter_mut()
+        .for_each(|(mut vibrissae, children)| {
+            update_vibrissae_lasers(
+                children,
+                vibrissae.as_mut(),
+                entity_type_query,
+                ray_cast_query,
+            )
+            .unwrap()
+        });
 
     Ok(())
 }
 
-pub fn update_vibrissae_lasers(entity: Entity, vibrissae: &mut PlayerVibrissae, player_gt: &GlobalTransform,
-                               entity_type_query: Query<&ComponentType>,
-                               player_query: Query<&Player>,
-                               children_query: Query<&Children>,
-                               rapier_ctx: &ReadRapierContext) -> Result<(), BevyError> {
-    let origin = player_gt.translation();
-    let rotation = player_gt.rotation();
+pub fn update_vibrissae_lasers(
+    children: &Children,
+    vibrissae: &mut PlayerVibrissae,
+    entity_type_query: Query<&ComponentType>,
+    ray_cast_query: Query<(&RayCaster, &RayHits, &LaserId)>,
+) -> Result<(), BevyError> {
+    for (ray, hits, id) in children
+        .into_iter()
+        .filter_map(|x| ray_cast_query.get(*x).ok())
+    {
+        let laser = &mut vibrissae.lasers[id.0];
 
-    let mut excluded_entities = Vec::new();
-    collect_descendants(entity, &children_query, &mut excluded_entities);
-
-    let filter_predicate = |e| player_query.get(e).is_err() && !excluded_entities.contains(&e);
-    let filter = QueryFilter::default().predicate(&filter_predicate);
-
-    let rapier_ctx = rapier_ctx.single()?;
-
-    for laser in &mut vibrissae.lasers {
-        let direction = rotation * laser.direction;
-
-        let result = rapier_ctx.cast_ray(origin, direction, LASER_LENGTH.into(), false, filter);
-
-        if let Some((entity, toi)) = result {
-            let toi = f32::from(toi);
-            let point = origin + direction * toi;
+        if let Some(hit) = hits.iter().next() {
+            let toi = f32::from(hit.distance);
+            let point = (ray.global_origin()) + (ray.global_direction()) * toi;
 
             let component_type = entity_type_query
-                .get(entity)
+                .get(hit.entity)
                 .copied()
                 .unwrap_or(ComponentType::Unknown);
 
@@ -116,32 +145,14 @@ pub fn update_vibrissae_lasers(entity: Entity, vibrissae: &mut PlayerVibrissae, 
     Ok(())
 }
 
-
-pub fn debug_render_lasers(
-    mut gizmos: Gizmos,
-    query: Query<(&PlayerVibrissae, &GlobalTransform), With<Player>>,
-) {
+pub fn debug_render_lasers(mut gizmos: Gizmos, query: Query<&PlayerVibrissae, With<Player>>) {
     // Only debug on controlled player (which is first player)
-    let (vibrissae, player_gt) = query.iter().next().unwrap();
-
-    let origin = player_gt.translation();
-    let direction = player_gt.rotation();
+    let vibrissae = query.iter().next().unwrap();
 
     for laser in vibrissae.lasers.iter() {
         let Some(hit) = &laser.hit else {
-            gizmos.line(
-                origin,
-                origin + (direction * laser.direction) * LASER_LENGTH,
-                BLUE,
-            );
             continue;
         };
-
-        gizmos.line(
-            origin,
-            origin + (direction * laser.direction) * LASER_LENGTH,
-            RED,
-        );
 
         gizmos.sphere(hit.point, 3.0, RED);
     }

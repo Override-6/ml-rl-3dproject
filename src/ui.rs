@@ -1,3 +1,4 @@
+use avian3d::prelude::{AngularVelocity, LinearVelocity};
 use crate::player::Player;
 use bevy::color::palettes::css::GREEN;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
@@ -7,7 +8,6 @@ use bevy::prelude::{
 use bevy::text::{JustifyText, TextColor, TextFont, TextLayout};
 use bevy::ui::{Node, Val};
 use bevy_math::EulerRot;
-use bevy_rapier3d::prelude::Velocity;
 
 // New component to mark our UI text
 #[derive(Component)]
@@ -47,11 +47,11 @@ pub fn setup_ui(mut commands: Commands) {
 }
 
 pub fn update_stats_text(
-    player_query: Query<(&Transform, &Velocity), With<Player>>,
+    player_query: Query<(&Transform, &LinearVelocity, &AngularVelocity), With<Player>>,
     mut text_query: Query<&mut Text, With<StatsText>>,
     diagnostic: Res<DiagnosticsStore>,
 ) {
-    let Some((transform, velocity)) = player_query.iter().next() else {
+    let Some((transform, lin_vel, ang_vel)) = player_query.iter().next() else {
         return;
     };
     let Ok(mut text) = text_query.single_mut() else {
@@ -60,8 +60,6 @@ pub fn update_stats_text(
 
     let position = transform.translation;
     let rotation = transform.rotation.to_euler(EulerRot::XYZ);
-    let lin_vel = velocity.linvel;
-    let ang_vel = velocity.angvel;
 
     let fps = diagnostic.get(&FrameTimeDiagnosticsPlugin::FPS);
 

@@ -1,38 +1,20 @@
-use bevy::prelude::{BevyError, ChildOf, Component, Entity, EventReader, Query, With};
-use bevy_rapier3d::prelude::*;
+use crate::component::player_character::PLAYER_HEIGHT;
+use crate::player::Player;
+use crate::sensor::player_vibrissae::PlayerVibrissae;
+use bevy::prelude::{BevyError, Component, Query, With};
 
 #[derive(Component, Default, Debug)]
-pub struct GroundContact(pub u32);
-
-#[derive(Component)]
-pub struct GroundSensor;
+pub struct GroundContact(pub bool);
 
 pub fn ground_sensor_events(
-    mut contact_events: EventReader<CollisionEvent>,
-    sensor_query: Query<(Entity, &ChildOf), With<GroundSensor>>,
-    mut players_contacts: Query<&mut GroundContact>,
+    mut players_contacts: Query<(&mut GroundContact, &PlayerVibrissae), With<Player>>,
 ) -> Result<(), BevyError> {
-    for event in contact_events.read() {
-        match event {
-            CollisionEvent::Started(e1, e2, _) | CollisionEvent::Stopped(e1, e2, _) => {
-                for (sensor_entity, parent) in sensor_query.iter() {
-                    if *e1 != sensor_entity && *e2 != sensor_entity {
-                        continue;
-                    }
-
-                    if let Ok(mut ground_contact) = players_contacts.get_mut(parent.parent()) {
-                        match event {
-                            CollisionEvent::Started(_, _, _) => {
-                                ground_contact.0 += 1;
-                            }
-                            CollisionEvent::Stopped(_, _, _) => {
-                                ground_contact.0 = ground_contact.0.saturating_sub(1);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    players_contacts
+        .par_iter_mut()
+        .for_each(|(mut contact, vibrissae)| {
+            let ground_laser = vibrissae.ground_sensor();
+            let Some(hit) = &ground_laser.hit else { return };
+            contact.0 = hit.distance <= (PLAYER_HEIGHT / 2.0);
+        });
     Ok(())
 }

@@ -1,13 +1,12 @@
 use crate::sensor::objective::TriggerZone;
+use avian3d::prelude::{Collider, Friction, RigidBody, Sensor};
 use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::pbr::{DirectionalLight, MeshMaterial3d, StandardMaterial};
 use bevy::prelude::{
-    Commands, Component, Mesh, Mesh3d, Name, ResMut, Transform, Vec2, Vec3, default,
+    default, Commands, Component, Mesh, Mesh3d, Name, ResMut, Transform, Vec2, Vec3,
 };
 use bevy_math::prelude::{Cuboid, Plane3d};
-use bevy_rapier3d::dynamics::RigidBody;
-use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
 
 #[derive(Debug, Component, Clone, Copy)]
 pub enum ComponentType {
@@ -24,10 +23,9 @@ pub fn setup_map(
 ) {
     // Plane
     let mut plane = commands.spawn((
-        Collider::halfspace(Vec3::Y).unwrap(),
-        CollisionGroups::new(Group::GROUP_2, Group::ALL),
-        Friction::coefficient(0.5),
-        RigidBody::Fixed,
+        Collider::half_space(Vec3::Y),
+        Friction::new(0.5),
+        RigidBody::Static,
         Name::new("Ground"),
         ComponentType::Ground,
     ));
@@ -46,10 +44,9 @@ pub fn setup_map(
     // Spawn Cube Obstacle
     let mut cube = commands.spawn((
         Transform::from_xyz(250.0, 10.0, 250.0),
-        Collider::cuboid(25.0, 25.0, 25.0),
-        RigidBody::Fixed,
-        CollisionGroups::new(Group::GROUP_2, Group::ALL),
-        Friction::coefficient(0.8),
+        Collider::cuboid(50.0, 50.0, 50.0),
+        RigidBody::Static,
+        Friction::new(0.8),
         ComponentType::Object,
     ));
 
@@ -65,11 +62,9 @@ pub fn setup_map(
     // Spawn objective
     let mut objective = commands.spawn((
         Transform::from_xyz(-250.0, 10.0, -250.0),
-        RigidBody::Fixed,
-        Collider::cuboid(25.0, 25.0, 25.0),
-        CollisionGroups::new(Group::GROUP_2, Group::ALL),
+        RigidBody::Static,
+        Collider::cuboid(50.0, 50.0, 50.0),
         Sensor,
-        ActiveEvents::COLLISION_EVENTS,
         TriggerZone,
         ComponentType::Objective,
     ));
