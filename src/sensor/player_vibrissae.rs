@@ -1,6 +1,7 @@
 use crate::map::ComponentType;
 use crate::player::Player;
 use bevy::color::palettes::basic::{BLUE, RED};
+use bevy::ecs::relationship::RelationshipSourceCollection;
 use bevy::prelude::{
     BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, With,
 };
@@ -59,12 +60,13 @@ pub fn update_all_vibrissae_lasers(
     mut query: Query<(Entity, &mut PlayerVibrissae, &GlobalTransform), With<Player>>,
     entity_type_query: Query<&ComponentType>,
     children_query: Query<&Children>,
+    player_query: Query<&Player>,
     rapier_ctx: ReadRapierContext,
 ) -> bevy::prelude::Result<(), BevyError> {
 
 
     query.par_iter_mut().for_each(|(entity, mut vibrissae, player_gt)|
-        update_vibrissae_lasers(entity, vibrissae.as_mut(), player_gt, entity_type_query, children_query, &rapier_ctx).unwrap()
+        update_vibrissae_lasers(entity, vibrissae.as_mut(), player_gt, entity_type_query, player_query, children_query, &rapier_ctx).unwrap()
     );
 
 
@@ -73,6 +75,7 @@ pub fn update_all_vibrissae_lasers(
 
 pub fn update_vibrissae_lasers(entity: Entity, vibrissae: &mut PlayerVibrissae, player_gt: &GlobalTransform,
                                entity_type_query: Query<&ComponentType>,
+                               player_query: Query<&Player>,
                                children_query: Query<&Children>,
                                rapier_ctx: &ReadRapierContext) -> Result<(), BevyError> {
     let origin = player_gt.translation();
@@ -81,7 +84,7 @@ pub fn update_vibrissae_lasers(entity: Entity, vibrissae: &mut PlayerVibrissae, 
     let mut excluded_entities = Vec::new();
     collect_descendants(entity, &children_query, &mut excluded_entities);
 
-    let filter_predicate = |e| !excluded_entities.contains(&e);
+    let filter_predicate = |e| player_query.get(e).is_err() && !excluded_entities.contains(&e);
     let filter = QueryFilter::default().predicate(&filter_predicate);
 
     let rapier_ctx = rapier_ctx.single()?;

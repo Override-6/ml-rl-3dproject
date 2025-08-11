@@ -47,7 +47,7 @@ enum HeadMode {
 
 fn main() {
     let script = read_script_from_file("script.bin");
-    let app = create_app(HeadMode::HeadRush, script);
+    let app = create_app(HeadMode::None, script);
     run_simulation(app)
 }
 
