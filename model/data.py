@@ -1,6 +1,8 @@
 from enum import Enum
 from typing import List
 
+LASERS_PER_PLAYER = 5
+NB_COMPONENT_TYPES = 5
 
 class Input(Enum):
     Noop = 0,
@@ -29,7 +31,9 @@ class Vec3:
         return f"Vec3({self.x}, {self.y}, {self.z})"
 
 class PlayerState:
-    def __init__(self, position: Vec3, ang_velocity: Vec3, lin_velocity: Vec3, rotation: Vec3, lasers: List[LaserHit]):
+    def __init__(self, reward: float, done: bool, position: Vec3, ang_velocity: Vec3, lin_velocity: Vec3, rotation: Vec3, lasers: List[LaserHit]):
+        self.reward = reward
+        self.done = done
         self.position = position
         self.ang_velocity = ang_velocity
         self.lin_velocity = lin_velocity
@@ -37,4 +41,4 @@ class PlayerState:
         self.lasers = lasers
 
     def __repr__(self):
-        return f"PlayerState(pos={self.position}, ang_vel={self.ang_velocity}, lin_vel={self.lin_velocity}, rot={self.rotation}, lasers={self.lasers})"
+        return f"PlayerState(reward={self.reward}, pos={self.position}, ang_vel={self.ang_velocity}, lin_vel={self.lin_velocity}, rot={self.rotation}, lasers={self.lasers})"

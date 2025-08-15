@@ -32,16 +32,21 @@ def read_player_states(conn):
 
     # Read PlayerStates
     player_states = []
-    player_state_size = 88
+    player_state_size = 96 # sizeof(PlayerState);
 
     data = recv_exact(conn, player_count * player_state_size)
 
     for i in range(player_count):
-        offset = i * 88
-        chunk = data[offset:offset + 88]
+        offset = i * player_state_size
+        chunk = data[offset:offset + player_state_size]
+
+        reward = struct.unpack('<f', chunk[0:4])[0]
+        done = struct.unpack('<i', chunk[4:8])[0] == 1
+
+        print(done)
 
         # Unpack Vec3s
-        vecs = struct.unpack('<' + 'f' * 12, chunk[:48])
+        vecs = struct.unpack('<' + 'f' * 12, chunk[8:48 + 8])
         pos = Vec3(*vecs[0:3])
         ang = Vec3(*vecs[3:6])
         lin = Vec3(*vecs[6:9])
@@ -50,12 +55,12 @@ def read_player_states(conn):
         # Unpack lasers with padding
         lasers = []
         for j in range(PLAYER_LASER_COUNT):
-            base = 48 + j * 8
+            base = 48 + 8 + j * 8
             distance = struct.unpack('<f', chunk[base:base + 4])[0]
             component_type = chunk[base + 4]  # u8
             lasers.append(LaserHit(distance=distance, component_type=component_type))
 
-        player_states.append(PlayerState(pos, ang, lin, rot, lasers))
+        player_states.append(PlayerState(reward, done, pos, ang, lin, rot, lasers))
 
     print("Received Player States")
     return player_states

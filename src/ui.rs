@@ -14,7 +14,7 @@ use bevy_rapier3d::prelude::Velocity;
 pub struct StatsText;
 
 #[derive(Component)]
-pub struct TriggerZoneText;
+pub struct SuccessUIText;
 
 pub fn setup_ui(mut commands: Commands) {
     commands.spawn((
@@ -42,7 +42,7 @@ pub fn setup_ui(mut commands: Commands) {
             ..Default::default()
         },
         Visibility::Hidden,
-        TriggerZoneText,
+        SuccessUIText,
     ));
 }
 

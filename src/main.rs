@@ -10,6 +10,9 @@ mod sensor;
 mod simulation;
 
 use crate::ai::input_recorder::GameInputRecorder;
+use crate::ai::model_control_pipeline::{
+    setup_model_connection, sync_model_outputs, sync_state_outputs,
+};
 use crate::ai::player::follow_all_script;
 use crate::ai::script::Script;
 use crate::component::arrow::{spawn_arrow_resource, spawn_arrows_to_players};
@@ -19,7 +22,7 @@ use crate::human::player::move_player;
 use crate::map::setup_map;
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
-use crate::simulation::{DELTA_TIME, SimulationConfig, TICK_RATE, spawn_players};
+use crate::simulation::{DELTA_TIME, SimulationConfig, SimulationStepState, TICK_RATE, spawn_players, PlayerStep};
 use crate::ui::{setup_ui, update_stats_text};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::ecs::schedule::ScheduleLabel;
@@ -28,11 +31,10 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use bevy_rapier3d::rapier::dynamics::IntegrationParameters;
 use bincode::encode_into_slice;
-use sensor::objective::{InTriggerZone, check_trigger_zone};
+use sensor::objective::{IsInObjective, check_trigger_zone};
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
-use crate::ai::model_control_pipeline::{setup_model_connection, sync_model_outputs, sync_state_outputs};
 
 const NB_AI_PLAYERS: usize = 50;
 
@@ -108,12 +110,11 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
         .add_systems(
             Startup,
             (
-                setup,
                 setup_map,
                 spawn_players,
                 spawn_player_character.after(spawn_players),
                 setup_model_connection.after(spawn_player_character),
-                sync_state_outputs.after(setup_model_connection)
+                sync_state_outputs.after(setup_model_connection),
             ),
         )
         .add_systems(Update, cleanup_on_exit)
@@ -184,11 +185,8 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
 }
 
 fn run_simulation(mut app: App) {
+    println!("sizeof PlayerStep {}", size_of::<PlayerStep>());
     app.run();
-}
-
-fn setup(mut commands: Commands) {
-    commands.insert_resource(InTriggerZone(false));
 }
 
 fn cleanup_on_exit(

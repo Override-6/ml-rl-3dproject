@@ -1,16 +1,19 @@
-use crate::ai::input::{Input, InputSet};
+use crate::ai::input::InputSet;
 use crate::map::ComponentType;
 use crate::player::Player;
+use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
-use crate::simulation::{LaserHit, PlayerState, SimulationStepState};
-use bevy::prelude::{Commands, GlobalTransform, Query, ResMut, Resource, With};
+use crate::simulation::{
+    LaserHit, PlayerEvaluation, PlayerState, PlayerStep, SimulationStepState, evaluate_player,
+};
+use bevy::prelude::{Commands, GlobalTransform, Query, Res, ResMut, Resource, With};
+use bevy::render::render_resource::encase::private::RuntimeSizedArray;
 use bevy_math::u32;
 use bevy_rapier3d::prelude::Velocity;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread::sleep;
 use std::time::Duration;
-use bevy::render::render_resource::encase::private::RuntimeSizedArray;
 
 #[derive(Resource)]
 pub struct ModelCommands {
@@ -27,14 +30,13 @@ impl ModelCommands {
         &mut self,
         state: SimulationStepState,
     ) -> Result<(), Box<dyn std::error::Error>> {
-
         let players_states = state.player_states.as_slice();
         let count_bytes = &u32::to_le_bytes(players_states.len() as u32);
         self.stream.write_all(count_bytes)?;
         let byte_slice: &[u8] = unsafe {
             std::slice::from_raw_parts(
                 players_states.as_ptr() as *const u8,
-                players_states.len() * size_of::<PlayerState>(),
+                players_states.len() * size_of::<PlayerStep>(),
             )
         };
         self.stream.write_all(byte_slice)?;
@@ -61,33 +63,58 @@ pub fn setup_model_connection(mut commands: Commands) {
 }
 
 pub fn sync_state_outputs(
+    last_state: Option<Res<SimulationStepState>>,
+    mut commands: Commands,
     mut model_commands: ResMut<ModelCommands>,
-    players: Query<(&PlayerVibrissae, &Velocity, &GlobalTransform), With<Player>>,
+    players: Query<
+        (
+            &PlayerVibrissae,
+            &Velocity,
+            &GlobalTransform,
+            &IsInObjective,
+        ),
+        With<Player>,
+    >,
 ) {
     let player_states = players
         .iter()
-        .map(|(vibrissae, velocity, transform)| PlayerState {
-            position: transform.translation(),
-            rotation: transform.rotation().xyz(),
-            ang_velocity: velocity.angvel,
-            lin_velocity: velocity.linvel,
-            lasers: vibrissae.lasers.clone().map(|s| {
-                s.hit.map_or(
-                    LaserHit {
-                        component_type: ComponentType::None,
-                        distance: -1.0,
-                    },
-                    |h| LaserHit {
-                        component_type: h.comp_type,
-                        distance: h.distance,
-                    },
-                )
-            }),
+        .map(|(vibrissae, velocity, transform, itz)| {
+            (
+                PlayerState {
+                    position: transform.translation(),
+                    rotation: transform.rotation().xyz(),
+                    ang_velocity: velocity.angvel,
+                    lin_velocity: velocity.linvel,
+                    lasers: vibrissae.lasers.clone().map(|s| {
+                        s.hit.map_or(
+                            LaserHit {
+                                component_type: ComponentType::None,
+                                distance: -1.0,
+                            },
+                            |h| LaserHit {
+                                component_type: h.comp_type,
+                                distance: h.distance,
+                            },
+                        )
+                    }),
+                },
+                itz,
+            )
+        })
+        .enumerate()
+        .map(|(player_idx, (state, itz))| PlayerStep {
+            evaluation: last_state
+                .as_ref()
+                .map_or(PlayerEvaluation::default(), |ls| {
+                    evaluate_player(&ls.player_states[player_idx].state, &state, itz.0)
+                }),
+            state,
         })
         .collect();
-    model_commands
-        .send_step_outputs(SimulationStepState { player_states })
-        .unwrap();
+
+    let state = SimulationStepState { player_states };
+    commands.insert_resource(state.clone());
+    model_commands.send_step_outputs(state).unwrap();
     println!("Sent state, awaiting models outputs...")
 }
 

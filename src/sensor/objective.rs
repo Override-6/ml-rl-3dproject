@@ -1,27 +1,27 @@
 use crate::player::Player;
-use crate::ui::TriggerZoneText;
+use crate::ui::SuccessUIText;
 use bevy::prelude::{
-    BevyError, Component, Entity, EventReader, Query, ResMut, Resource, Visibility, With,
+    BevyError, Component, Entity, EventReader, Query, Visibility, With,
 };
 use bevy_rapier3d::prelude::CollisionEvent;
 
 #[derive(Component)]
-pub struct TriggerZone;
+pub struct Objective;
 
-#[derive(Resource)]
-pub struct InTriggerZone(pub bool);
+#[derive(Component)]
+pub struct IsInObjective(pub bool);
 
 // Trigger zone detection system
 pub fn check_trigger_zone(
     mut collision_events: EventReader<CollisionEvent>,
-    player_query: Query<Entity, With<Player>>,
-    trigger_query: Query<Entity, With<TriggerZone>>,
-    mut text_query: Query<&mut Visibility, With<TriggerZoneText>>,
-    mut in_zone: ResMut<InTriggerZone>,
+    mut player_query: Query<Entity, With<Player>>,
+    mut itz: Query<&mut IsInObjective>,
+    trigger_query: Query<Entity, With<Objective>>,
+    mut text_query: Query<&mut Visibility, With<SuccessUIText>>,
 ) -> Result<(), BevyError> {
     let trigger = trigger_query.single()?;
-    let players = player_query.iter().collect::<Vec<_>>();
-    let player_one = players[0]; // controlled player
+    let players = player_query.iter_mut().next();
+    let player_one = players.unwrap(); // controlled player
     let mut text = text_query.single_mut().ok();
 
     for event in collision_events.read() {
@@ -31,10 +31,13 @@ pub fn check_trigger_zone(
                     continue
                 }
                 let player = if *e1 == trigger { *e2 } else { *e1 };
-                println!("Player {player} inside trigger zone");
+                println!("Entity {player} inside trigger zone");
+
+                if let Some(mut in_zone) = itz.get_mut(player).ok() {
+                    in_zone.0 = true;
+                }
 
                 if player == player_one {
-                    in_zone.0 = true;
                     if let Some(text) = text.as_mut() {
                         *text.as_mut() = Visibility::Visible;
                     }
@@ -47,8 +50,11 @@ pub fn check_trigger_zone(
                 let player = if *e1 == trigger { *e2 } else { *e1 };
                 println!("Player {player} inside trigger zone");
 
-                if player == player_one {
+                if let Some(mut in_zone) = itz.get_mut(player).ok() {
                     in_zone.0 = false;
+                }
+
+                if player == player_one {
                     if let Some(text) = text.as_mut() {
                         *text.as_mut() = Visibility::Hidden;
                     }

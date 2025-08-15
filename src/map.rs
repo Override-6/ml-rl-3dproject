@@ -1,4 +1,4 @@
-use crate::sensor::objective::TriggerZone;
+use crate::sensor::objective::Objective;
 use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::pbr::{DirectionalLight, MeshMaterial3d, StandardMaterial};
@@ -18,6 +18,8 @@ pub enum ComponentType {
     Objective = 3,
     Unknown = 4,
 }
+
+pub const OBJECTIVE_POS: Vec3 = Vec3::new(-250.0, 10.0, -250.0);
 
 pub fn setup_map(
     mut commands: Commands,
@@ -66,13 +68,13 @@ pub fn setup_map(
 
     // Spawn objective
     let mut objective = commands.spawn((
-        Transform::from_xyz(-250.0, 10.0, -250.0),
+        Transform::from_translation(OBJECTIVE_POS),
         RigidBody::Fixed,
         Collider::cuboid(25.0, 25.0, 25.0),
         CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
         Sensor,
         ActiveEvents::COLLISION_EVENTS,
-        TriggerZone,
+        Objective,
         ComponentType::Objective,
     ));
 

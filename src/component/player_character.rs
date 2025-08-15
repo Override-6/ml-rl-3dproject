@@ -16,6 +16,7 @@ use bevy_rapier3d::dynamics::{
 use bevy_rapier3d::prelude::*;
 use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
 use rand::Rng;
+use crate::sensor::objective::IsInObjective;
 
 pub const PLAYER_WIDTH: f32 = 10.0;
 pub const PLAYER_HEIGHT: f32 = 10.0;
@@ -31,11 +32,12 @@ pub fn spawn_player_character(
         let mut player = commands.entity(player);
         player.insert((
             PlayerVibrissae::from(PLAYER_LASERS),
+            IsInObjective(false),
+            GroundContact(0),
             Transform::from_xyz(rng.random_range(-30.0..30.0), 0.0, rng.random_range(-30.0..30.0)),
             Velocity::default(),
             GlobalTransform::default(),
             InheritedVisibility::VISIBLE,
-            GroundContact(0),
             RigidBody::Dynamic,
             AdditionalMassProperties::Mass(200.0),
             Collider::cuboid(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0, PLAYER_WIDTH / 2.0),
