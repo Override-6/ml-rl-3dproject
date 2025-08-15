@@ -3,18 +3,20 @@ use bevy::asset::Assets;
 use bevy::color::Color;
 use bevy::pbr::{DirectionalLight, MeshMaterial3d, StandardMaterial};
 use bevy::prelude::{
-    Commands, Component, Mesh, Mesh3d, Name, ResMut, Transform, Vec2, Vec3, default,
+    default, Commands, Component, Mesh, Mesh3d, Name, ResMut, Transform, Vec2, Vec3,
 };
 use bevy_math::prelude::{Cuboid, Plane3d};
 use bevy_rapier3d::dynamics::RigidBody;
 use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
 
 #[derive(Debug, Component, Clone, Copy)]
+#[repr(u8)]
 pub enum ComponentType {
-    Ground,
-    Object,
-    Objective,
-    Unknown,
+    None = 0,
+    Ground = 1,
+    Object = 2,
+    Objective = 3,
+    Unknown = 4,
 }
 
 pub fn setup_map(
@@ -25,7 +27,7 @@ pub fn setup_map(
     // Plane
     let mut plane = commands.spawn((
         Collider::halfspace(Vec3::Y).unwrap(),
-        CollisionGroups::new(Group::GROUP_2, Group::ALL),
+        CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
         Friction::coefficient(0.5),
         RigidBody::Fixed,
         Name::new("Ground"),
@@ -48,7 +50,7 @@ pub fn setup_map(
         Transform::from_xyz(250.0, 10.0, 250.0),
         Collider::cuboid(25.0, 25.0, 25.0),
         RigidBody::Fixed,
-        CollisionGroups::new(Group::GROUP_2, Group::ALL),
+        CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
         Friction::coefficient(0.8),
         ComponentType::Object,
     ));
@@ -67,7 +69,7 @@ pub fn setup_map(
         Transform::from_xyz(-250.0, 10.0, -250.0),
         RigidBody::Fixed,
         Collider::cuboid(25.0, 25.0, 25.0),
-        CollisionGroups::new(Group::GROUP_2, Group::ALL),
+        CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
         Sensor,
         ActiveEvents::COLLISION_EVENTS,
         TriggerZone,

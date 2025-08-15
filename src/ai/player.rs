@@ -1,22 +1,23 @@
 use crate::ai::input::Input;
-use crate::human::player::PLAYER_TURN_SPEED;
+use crate::player::{PLAYER_SPEED, PLAYER_TURN_SPEED};
 use crate::sensor::ground_sensor::GroundContact;
-use crate::simulation::{Simulation, DELTA_TIME};
+use crate::simulation::{SimulationConfig, SimulationStepState, DELTA_TIME};
 use bevy::app::AppExit;
 use bevy::log::error;
 use bevy::prelude::{
     BevyError, Component, EventWriter, Query, Res, Transform, Vec3, With,
 };
+use bevy::time::Time;
 use bevy_rapier3d::prelude::Velocity;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use bevy::time::Time;
+use crate::ai::model_control_pipeline::SimulationPlayersInputs;
 
 pub struct AIPlayerId(pub usize);
 
 #[derive(Component)]
 pub struct AIPlayer {
-    script_progress: usize,
+    // script_progress: usize,
     pub id: AIPlayerId,
 }
 
@@ -24,7 +25,7 @@ impl AIPlayer {
     pub fn new(id: AIPlayerId) -> Self {
         Self {
             id,
-            script_progress: 0,
+            // script_progress: 0,
         }
     }
 }
@@ -34,11 +35,11 @@ pub fn follow_all_script(
         (&mut Velocity, &Transform, &GroundContact, &mut AIPlayer),
         With<AIPlayer>,
     >,
-    sim: Res<Simulation>,
+    sim: Res<SimulationPlayersInputs>,
     mut app_exit: EventWriter<AppExit>,
     time: Res<Time>
 ) -> bevy::prelude::Result<(), BevyError> {
-
+    println!("GL_delta: {}", time.delta_secs());
     let should_exit: AtomicBool = AtomicBool::default();
     player_query
         .par_iter_mut()
@@ -62,21 +63,10 @@ fn follow_script(
     transform: &Transform,
     ground_contact: &GroundContact,
     ai_player: &mut AIPlayer,
-    sim: &Res<Simulation>,
+    sim: &Res<SimulationPlayersInputs>,
 ) -> bool {
-    let index = ai_player.script_progress;
-    ai_player.script_progress += 1;
 
-    let script = match sim.deref() {
-        Simulation::Simulation { script, .. } => script.clone(),
-        _ => unreachable!("No AI Entity should live if not in Simulation Mode!"),
-    };
-
-    if index >= script.inputs.len() {
-        return true; // abort once script finished
-    }
-
-    let input_set = script.inputs[index];
+    let input_set = sim.inputs[ai_player.id.0];
 
     let mut move_input = Vec3::ZERO;
 
@@ -99,7 +89,7 @@ fn follow_script(
         move_input = move_input.normalize();
     }
 
-    let speed = 200.0;
+    let speed = PLAYER_SPEED;
 
     // Apply movement relative to player's facing direction
     let rotated_input = transform.rotation * move_input;
@@ -119,10 +109,10 @@ fn follow_script(
 
     // Jump
     if input_set & Input::Jump != 0 {
-        if ground_contact.0 == 0 {
-            error!("Received jump instruction while not on ground!")
-        } else {
+        if ground_contact.0 != 0 {
             velocity.linvel.y += 400.0;
+        } else {
+            // error!("Received jump instruction while not on ground!")
         }
     }
 

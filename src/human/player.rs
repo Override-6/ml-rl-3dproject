@@ -1,5 +1,6 @@
 use crate::ai::input::{Input, InputSet};
 use crate::ai::input_recorder::GameInputRecorder;
+use crate::player::{PLAYER_JUMP_SPEED, PLAYER_SPEED, PLAYER_TURN_SPEED};
 use crate::sensor::ground_sensor::GroundContact;
 use crate::simulation::DELTA_TIME;
 use bevy::input::ButtonInput;
@@ -12,7 +13,6 @@ use bevy_rapier3d::dynamics::Velocity;
 #[derive(Component)]
 pub struct HumanPlayer;
 
-pub const PLAYER_TURN_SPEED: f32 = 10.0;
 
 pub fn move_player(
     kb: Res<ButtonInput<KeyCode>>,
@@ -49,7 +49,7 @@ pub fn move_player(
         move_input = move_input.normalize();
     }
 
-    let speed = 200.0;
+    let speed = PLAYER_SPEED;
 
     // Apply movement relative to player's facing direction
     let rotated_input = transform.rotation * move_input;
@@ -71,7 +71,7 @@ pub fn move_player(
 
     // Jump
     if kb.pressed(KeyCode::Space) && ground_contact.0 > 0 {
-        velocity.linvel.y += 400.0;
+        velocity.linvel.y += PLAYER_JUMP_SPEED;
         set |= Input::Jump;
     }
 

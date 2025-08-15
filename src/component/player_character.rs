@@ -1,4 +1,4 @@
-use crate::player::Player;
+use crate::player::{Player, PLAYER_LASERS};
 use crate::sensor::ground_sensor::{GroundContact, GroundSensor};
 use crate::sensor::player_vibrissae::PlayerVibrissae;
 use bevy::asset::Assets;
@@ -13,6 +13,7 @@ use bevy_math::Vec3;
 use bevy_rapier3d::dynamics::{
     AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RigidBody, Velocity,
 };
+use bevy_rapier3d::prelude::*;
 use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
 use rand::Rng;
 
@@ -25,17 +26,11 @@ pub fn spawn_player_character(
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
 ) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for player in players.iter() {
         let mut player = commands.entity(player);
         player.insert((
-            PlayerVibrissae::from_vec(vec![
-                Vec3::NEG_Z,
-                Vec3::Z,
-                Vec3::X,
-                Vec3::NEG_X,
-                Vec3::NEG_Y,
-            ]),
+            PlayerVibrissae::from(PLAYER_LASERS),
             Transform::from_xyz(rng.random_range(-30.0..30.0), 0.0, rng.random_range(-30.0..30.0)),
             Velocity::default(),
             GlobalTransform::default(),
@@ -44,7 +39,7 @@ pub fn spawn_player_character(
             RigidBody::Dynamic,
             AdditionalMassProperties::Mass(200.0),
             Collider::cuboid(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0, PLAYER_WIDTH / 2.0),
-            CollisionGroups::new(Group::GROUP_1, Group::ALL ^ Group::GROUP_1),
+            CollisionGroups::new(Group::GROUP_1, Group::GROUP_2),
             LockedAxes::ROTATION_LOCKED ^ LockedAxes::ROTATION_LOCKED_Y,
             Friction {
                 coefficient: 0.0,
@@ -68,7 +63,7 @@ pub fn spawn_player_character(
                 GroundSensor,
                 Collider::cuboid(PLAYER_WIDTH / 2.0, 0.1, PLAYER_WIDTH / 2.0),
                 Sensor,
-                CollisionGroups::new(Group::GROUP_1, Group::ALL ^ Group::GROUP_1),
+                CollisionGroups::new(Group::GROUP_1, Group::GROUP_2),
                 ActiveEvents::COLLISION_EVENTS,
                 Transform::from_xyz(0.0, -(PLAYER_HEIGHT / 2.0), 0.0),
                 GlobalTransform::default(),

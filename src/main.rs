@@ -19,7 +19,7 @@ use crate::human::player::move_player;
 use crate::map::setup_map;
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
-use crate::simulation::{DELTA_TIME, Simulation, TICK_RATE, spawn_players};
+use crate::simulation::{DELTA_TIME, SimulationConfig, TICK_RATE, spawn_players};
 use crate::ui::{setup_ui, update_stats_text};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::ecs::schedule::ScheduleLabel;
@@ -32,8 +32,9 @@ use sensor::objective::{InTriggerZone, check_trigger_zone};
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
+use crate::ai::model_control_pipeline::{setup_model_connection, sync_model_outputs, sync_state_outputs};
 
-const NB_AI_PLAYERS: usize = 1000;
+const NB_AI_PLAYERS: usize = 50;
 
 #[derive(ScheduleLabel, Clone, Hash, PartialEq, Eq, Debug)]
 pub struct PostPhysics;
@@ -47,7 +48,7 @@ enum HeadMode {
 
 fn main() {
     let script = read_script_from_file("script.bin");
-    let app = create_app(HeadMode::None, script);
+    let app = create_app(HeadMode::HeadRealTime, script);
     run_simulation(app)
 }
 
@@ -111,6 +112,8 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
                 setup_map,
                 spawn_players,
                 spawn_player_character.after(spawn_players),
+                setup_model_connection.after(spawn_player_character),
+                sync_state_outputs.after(setup_model_connection)
             ),
         )
         .add_systems(Update, cleanup_on_exit)
@@ -118,7 +121,6 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
             RapierContextInitialization::InitializeDefaultRapierContext {
                 integration_parameters: IntegrationParameters {
                     dt: DELTA_TIME,
-                    warmstart_coefficient: 0.0,
                     ..default()
                 },
                 rapier_configuration: RapierConfiguration {
@@ -154,7 +156,7 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
     }
 
     if let Some(script) = script {
-        app.insert_resource(Simulation::Simulation {
+        app.insert_resource(SimulationConfig::Simulation {
             script,
             num_ai_players: NB_AI_PLAYERS,
         });
@@ -166,7 +168,7 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
             "Must be in HeadMode::RealTime if you want to record inputs"
         );
         app.insert_resource(GameInputRecorder::new());
-        app.insert_resource(Simulation::Game);
+        app.insert_resource(SimulationConfig::Game);
         add_game_logic_systems!(move_player);
     }
 
@@ -174,6 +176,8 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
         ground_sensor_events,
         check_trigger_zone,
         update_all_vibrissae_lasers,
+        sync_model_outputs.before(follow_all_script),
+        sync_state_outputs.after(PhysicsSet::StepSimulation),
     ));
 
     app
