@@ -2,10 +2,11 @@ use crate::ai::player::{AIPlayer, AIPlayerId};
 use crate::ai::script::Script;
 use crate::human::player::HumanPlayer;
 use crate::map::{ComponentType, OBJECTIVE_POS};
-use crate::player::{PLAYER_LASER_COUNT, Player};
-use crate::sensor::objective::IsInObjective;
-use bevy::prelude::{Commands, Res, Resource};
+use crate::player::{Player, PLAYER_LASER_COUNT};
+use bevy::prelude::{Commands, Query, Res, Resource, Transform, With};
 use bevy_math::Vec3;
+use bevy_rapier3d::prelude::Velocity;
+use rand::Rng;
 use std::ops::Deref;
 
 pub const TICK_RATE: f32 = 5.0;
@@ -68,11 +69,11 @@ pub fn spawn_players(mut commands: Commands, simulation: Res<SimulationConfig>) 
             commands.spawn_batch(
                 (0..*num_ai_players)
                     .into_iter()
-                    .map(|id| (Player, AIPlayer::new(AIPlayerId(id)))),
+                    .map(|id| (Player::default(), AIPlayer::new(AIPlayerId(id)))),
             );
         }
         SimulationConfig::Game => {
-            commands.spawn((Player, HumanPlayer));
+            commands.spawn((Player::default(), HumanPlayer));
         }
     }
 }
@@ -81,9 +82,9 @@ pub fn spawn_players(mut commands: Commands, simulation: Res<SimulationConfig>) 
 #[derive(Clone, Default)]
 pub struct PlayerEvaluation {
     /// Reward of the step. Did the player performed well on that step ?
-    reward: f32,
+    pub(crate) reward: f32,
     /// True if the player performed a terminal operation.
-    done: bool,
+    pub(crate) done: bool,
 }
 
 pub fn evaluate_player(
@@ -97,16 +98,27 @@ pub fn evaluate_player(
     let mut reward = 0.0;
     let mut done = false;
 
-    if previous_objective_distance < current_objective_distance {
+    if previous_objective_distance > current_objective_distance {
         reward += 0.1;
     } else {
         reward -= 0.1
     }
 
     if in_objective {
-        reward += 1.0;
+        reward = 1.0;
         done = true;
     }
 
     PlayerEvaluation { reward, done }
+}
+
+pub fn reset_simulation(
+    mut players: Query<(&mut Transform, &mut Velocity, &mut Player), With<Player>>
+) {
+    let mut rng = rand::rng();
+    for (mut transform, mut velocity, mut player) in players.iter_mut() {
+        *transform = Transform::from_xyz(rng.random_range(-30.0..30.0), 0.0, rng.random_range(-30.0..30.0));
+        *velocity = Velocity::default();
+        player.freeze = false; // unfreeze all players
+    }
 }

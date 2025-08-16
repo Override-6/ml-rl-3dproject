@@ -1,17 +1,25 @@
 # Requires: tensorflow >= 2.x
+import os
+
 import numpy as np
+
+from data import Input
+
+os.environ["KERAS_BACKEND"] = "tensorflow"
 import tensorflow as tf
-from tensorflow.keras import layers, models
+from tensorflow.keras import layers, Model
+
+from simulation import read_player_states, send_model_outputs, send_reset
 
 # ------------------------
 # Hyperparameters
 # ------------------------
 LASERS_PER_PLAYER = 5
 NB_COMPONENT_TYPES = 5
-NUM_ACTIONS = 8  # number of binary action outputs
+NUM_ACTIONS = len(Input)  # number of binary action outputs
 FEATURE_DIM = 128
 LSTM_UNITS = 64
-SEQ_LEN = 32           # rollout horizon (timesteps collected before update)
+SEQ_LEN = 32  # rollout horizon (timesteps collected before update)
 PPO_EPOCHS = 4
 MINIBATCH_SIZE = 64
 CLIP_EPS = 0.2
@@ -21,10 +29,11 @@ LR = 3e-4
 GAMMA = 0.99
 LAMBDA = 0.95
 
+
 # ------------------------
 # Build model class
 # ------------------------
-class NavigationModel(tf.Module):
+class NavigationModel(tf.keras.Model):
     def __init__(self):
         super().__init__()
 
@@ -50,7 +59,7 @@ class NavigationModel(tf.Module):
         self.dense2 = layers.Dense(FEATURE_DIM, activation='relu')
 
         # LSTM layer (can accept initial_state param on call)
-        self.lstm = layers.LSTM(LSTM_UNITS, return_state=True, return_sequences=False, name="lstm")
+        self.lstm = layers.LSTM(LSTM_UNITS, return_state=True, return_sequences=True, name="lstm")
 
         # Heads
         # Policy uses sigmoid for independent binary actions
@@ -60,12 +69,12 @@ class NavigationModel(tf.Module):
     def extract_features(self, pos, angvel, linvel, rot, laser_dist, laser_type):
         """Extract single-timestep features. Inputs are tensors with shape (batch, ...)"""
         # apply input layers so shapes are checked
-        _ = self.pos_layer(pos)
-        _ = self.angvel_layer(angvel)
-        _ = self.linvel_layer(linvel)
-        _ = self.rot_layer(rot)
-        _ = self.laser_dist_layer(laser_dist)
-        _ = self.laser_type_layer(laser_type)
+        # _ = self.pos_layer(pos)
+        # _ = self.angvel_layer(angvel)
+        # _ = self.linvel_layer(linvel)
+        # _ = self.rot_layer(rot)
+        # _ = self.laser_dist_layer(laser_dist)
+        # _ = self.laser_type_layer(laser_type)
 
         emb = self.type_emb(laser_type)  # (batch, LASERS, emb)
         laser_features = tf.concat([laser_dist, emb], axis=-1)  # (batch, LASERS, 1+emb)
@@ -84,14 +93,21 @@ class NavigationModel(tf.Module):
         Single-step forward with initial LSTM state (h,c).
         Inputs shapes: each (batch, ...)
         h, c shapes: (batch, LSTM_UNITS)
-        Returns: policy_logits (batch, NUM_ACTIONS), value (batch,), h_next, c_next
+        Returns:
+            policy: (batch, NUM_ACTIONS)            # probabilities
+            value: (batch,)                        # scalar value per env
+            h_next: (batch, LSTM_UNITS)
+            c_next: (batch, LSTM_UNITS)
         """
         feat = self.extract_features(pos, angvel, linvel, rot, laser_dist, laser_type)
-        # expand to sequence length 1 so LSTM accepts it
-        feat_seq = tf.expand_dims(feat, axis=1)  # (batch, 1, feat_dim)
-        # call LSTM with initial state
-        # lstm returns (output, h_next, c_next)
-        out, h_next, c_next = self.lstm(feat_seq, initial_state=[h, c])
+        feat_seq = tf.expand_dims(feat, axis=1)  # (batch, 1, FEATURE_DIM)
+
+        # LSTM returns (batch, 1, units), h_next (batch,units), c_next (batch,units)
+        out_seq, h_next, c_next = self.lstm(feat_seq, initial_state=[h, c])
+
+        # squeeze time dim -> (batch, units)
+        out = tf.squeeze(out_seq, axis=1)
+
         policy = self.policy_head(out)  # (batch, NUM_ACTIONS)
         value = tf.squeeze(self.value_head(out), axis=-1)  # (batch,)
         return policy, value, h_next, c_next
@@ -100,12 +116,14 @@ class NavigationModel(tf.Module):
     def forward_sequence(self, pos_seq, angvel_seq, linvel_seq, rot_seq, laser_dist_seq, laser_type_seq,
                          h0=None, c0=None):
         """
-        Forward a whole sequence for training. Each input shape: (batch, seq_len, ...)
+        Forward a whole sequence for training.
+        Each input shape: (batch, seq_len, ...)
         Optionally provide initial states (batch, LSTM_UNITS) or defaults to zeros.
         Returns:
             policy_seq: (batch, seq_len, NUM_ACTIONS)
             values_seq: (batch, seq_len)
-            h_last, c_last: (batch, LSTM_UNITS)
+            h_last: (batch, LSTM_UNITS)
+            c_last: (batch, LSTM_UNITS)
         """
         batch = tf.shape(pos_seq)[0]
         seq_len = tf.shape(pos_seq)[1]
@@ -133,11 +151,7 @@ class NavigationModel(tf.Module):
             c0 = tf.zeros((batch, LSTM_UNITS))
 
         # Run LSTM across the whole sequence
-        # return_sequences=True would give per-timestep outputs;
-        # but since we defined `self.lstm` with return_sequences=False we create an RNN wrapper here:
-        rnn_layer = layers.RNN(layers.LSTMCell(LSTM_UNITS), return_state=True, return_sequences=True)
-        # call rnn_layer with initial state
-        all_outs_and_states = rnn_layer(feat_seq, initial_state=[h0, c0])
+        all_outs_and_states = self.lstm(feat_seq, initial_state=[h0, c0])
         outputs = all_outs_and_states[0]  # (batch, seq_len, LSTM_UNITS)
         h_last = all_outs_and_states[1]
         c_last = all_outs_and_states[2]
@@ -145,6 +159,7 @@ class NavigationModel(tf.Module):
         policy_seq = self.policy_head(outputs)  # (batch, seq_len, NUM_ACTIONS)
         values_seq = tf.squeeze(self.value_head(outputs), axis=-1)  # (batch, seq_len)
         return policy_seq, values_seq, h_last, c_last
+
 
 # instantiate
 nav_model = NavigationModel()
@@ -171,9 +186,9 @@ def bernoulli_log_probs(probs, actions):
 def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
     """
     rewards: (T, Nenv)
-    values: (T, Nenv)
+    values: (T, Nenv, SEQ_LEN)
     dones: (T, Nenv) 1 if episode ended after step t, else 0
-    last_value: (Nenv,) bootstrap value for step T
+    last_value: (Nenv, SEQ_LEN) bootstrap value for step T
     returns: advantages (T, Nenv), returns (T, Nenv)
     """
     T = rewards.shape[0]
@@ -201,10 +216,13 @@ def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
 def ppo_update(rollout, nav_model, optimizer):
     """
     rollout: dict with keys:
-      pos: (T, N, 3), angvel, linvel, rot, laser_dist, laser_type
-      actions: (T, N, NUM_ACTIONS) 0/1
-      old_logp: (T, N)
-      values: (T, N)
+      pos: (T, N, 3)
+      angvel, linvel, rot: same as pos
+      laser_dist: (T, N, LASERS_PER_PLAYER, 1)
+      laser_type: (T, N, LASERS_PER_PLAYER)
+      actions: (T, N, SEQ_LEN, NUM_ACTIONS)   # sequence of actions per environment step
+      old_logp: (T, N, SEQ_LEN)
+      values: (T, N, SEQ_LEN)
       rewards: (T, N)
       dones: (T, N) 0/1
       h0: (N, LSTM_UNITS) initial states at rollout start
@@ -226,7 +244,7 @@ def ppo_update(rollout, nav_model, optimizer):
     last_policy, last_value, _, _ = nav_model.step(
         last_pos, last_angvel, last_linvel, last_rot, last_laser_dist, last_laser_type, h_last, c_last
     )
-    last_value = last_value.numpy()  # (N,)
+    last_value = last_value.numpy()  # (N, SEQ_LEN)
 
     # compute advantages & returns
     advantages, returns = compute_gae(
@@ -250,7 +268,7 @@ def ppo_update(rollout, nav_model, optimizer):
     old_logp_seq = np.transpose(rollout['old_logp'], (1, 0))
     adv_seq = np.transpose(advantages, (1, 0))
     returns_seq = np.transpose(returns, (1, 0))
-    values_seq = np.transpose(rollout['values'], (1, 0))
+    # values_seq = np.transpose(rollout['values'], (1, 0))
 
     # We'll train for multiple epochs and sample minibatches of environments
     num_samples = N
@@ -258,6 +276,7 @@ def ppo_update(rollout, nav_model, optimizer):
 
     for epoch in range(PPO_EPOCHS):
         np.random.shuffle(idxs)
+        print("Epoch {}".format(epoch), end="\r")
         for start in range(0, num_samples, MINIBATCH_SIZE):
             mb_idxs = idxs[start:start + MINIBATCH_SIZE]
             # minibatch sequences (batch = mb_size)
@@ -312,7 +331,8 @@ def ppo_update(rollout, nav_model, optimizer):
 
                 # entropy (encourage exploration) average over actions and time
                 eps = 1e-8
-                entropy_per_action = -(policy_seq * tf.math.log(policy_seq + eps) + (1 - policy_seq) * tf.math.log(1 - policy_seq + eps))
+                entropy_per_action = -(policy_seq * tf.math.log(policy_seq + eps) + (1 - policy_seq) * tf.math.log(
+                    1 - policy_seq + eps))
                 entropy = tf.reduce_mean(entropy_per_action)
                 entropy_loss = -ENTROPY_COEFF * entropy
 
@@ -329,7 +349,7 @@ def ppo_update(rollout, nav_model, optimizer):
 # Rollout collector (interacts with simulation)
 # ------------------------
 # -- Placeholder functions for sim interaction: replace with your IPC/FFI/pyO3 calls.
-def sim_get_states():
+def sim_get_states(conn):
     """
     Replace with code that returns per-player states from the simulation.
     Should return dictionaries of numpy arrays with shape (Nplayers, ...).
@@ -342,26 +362,35 @@ def sim_get_states():
         "lasers": { "dist": np.array((N, LASERS, 1)), "type": np.array((N, LASERS)) }
       }
     """
-    raise NotImplementedError("Replace sim_get_states() with your sim interface.")
+    return read_player_states(conn)
 
 
-def sim_send_actions(actions_per_player):
+def sim_send_actions(conn, actions_per_player):
     """
     Send actions back to sim. actions_per_player: numpy array shape (N, NUM_ACTIONS) 0/1
     """
-    raise NotImplementedError("Replace sim_send_actions() with your sim interface.")
+    # Ensure it's integers
+    arr = actions_per_player.astype(int)
+
+    # Compute powers of 2 for each bit (assuming most significant bit first)
+    powers_of_two = 2 ** np.arange(arr.shape[1] - 1, -1, -1)
+
+    # Multiply and sum along axis 1
+    actions_per_player = arr.dot(powers_of_two)
+    return send_model_outputs(conn, actions_per_player)
 
 
 # Example rollout collection loop skeleton
-def collect_rollout(nav_model, rollout_length=SEQ_LEN):
+def collect_rollout(conn, nav_model, rollout_length=SEQ_LEN):
     """
     Collect a rollout of length T for all N players currently in sim.
     Returns the 'rollout' dict used by ppo_update.
     """
     # initial read to get number of players N and initial states
-    sim_state = sim_get_states()
+    sim_state = sim_get_states(conn)
     N = sim_state['position'].shape[0]
     T = rollout_length
+
 
     # buffers (T, N, ...)
     pos_buf = np.zeros((T, N, 3), dtype=np.float32)
@@ -386,13 +415,12 @@ def collect_rollout(nav_model, rollout_length=SEQ_LEN):
     c0 = c.copy()
 
     for t in range(T):
-        sim_state = sim_get_states()  # get current state (N players)
         pos = sim_state['position'].astype(np.float32)
-        ang = sim_state['ang_velocity'].astype(np.float32)
-        lin = sim_state['lin_velocity'].astype(np.float32)
+        ang = sim_state['angvel'].astype(np.float32)
+        lin = sim_state['linvel'].astype(np.float32)
         rot = sim_state['rotation'].astype(np.float32)
-        laser_dist = sim_state['lasers']['dist'].astype(np.float32)
-        laser_type = sim_state['lasers']['type'].astype(np.int32)
+        laser_dist = sim_state['laser']['distance'].astype(np.float32)
+        laser_type = sim_state['laser']['type'].astype(np.int32)
 
         # store state
         pos_buf[t] = pos
@@ -415,22 +443,22 @@ def collect_rollout(nav_model, rollout_length=SEQ_LEN):
         c = c_tf.numpy()
 
         # Sample actions from bernoulli (we use probabilities policy)
-        actions = (np.random.rand(*policy.shape) < policy).astype(np.float32)  # (N, NUM_ACTIONS)
+        actions = (np.random.rand(*policy.shape) < policy).astype(np.float32)  # (N, SEQ_LEN, NUM_ACTIONS,)
         # compute log_probs under the policy we used (store old_logp for PPO)
         eps = 1e-8
-        logp = np.sum(actions * np.log(policy + eps) + (1 - actions) * np.log(1 - policy + eps), axis=-1)  # (N,)
+        logp = np.sum(actions * np.log(policy + eps) + (1 - actions) * np.log(1 - policy + eps), axis=-1)  # (N, SEQ_LEN)
 
         # send actions to simulation
-        sim_send_actions(actions)
+        sim_send_actions(conn, actions)
 
         # after sim step, read rewards and done flags for each player
         # assuming you can call sim_get_rewards() or sim provides them in next sim_get_states()
         # For simplicity, we call sim_get_states again to read reward/done or make a dedicated call
         # Replace the following with your actual reward/done retrieval
-        next_info = sim_get_states() # compute from the next state the rewards, dones etc
+        sim_state = sim_get_states(conn)  # compute from the next state the rewards, dones etc
         # Here you must obtain rewards and done for each player. Replace these lines:
-        rewards = np.zeros(N, dtype=np.float32)  # REPLACE: get actual reward per player
-        dones = np.zeros(N, dtype=np.float32)    # REPLACE: get actual done per player
+        rewards = sim_state["reward"]
+        dones = sim_state["done"]
 
         # store action / logging info
         actions_buf[t] = actions
@@ -444,6 +472,7 @@ def collect_rollout(nav_model, rollout_length=SEQ_LEN):
             if dones[i]:
                 h[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
                 c[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
+
 
     rollout = {
         'pos': pos_buf,
@@ -464,11 +493,12 @@ def collect_rollout(nav_model, rollout_length=SEQ_LEN):
     }
     return rollout
 
-def train_loop(num_updates=10000):
+
+def train_loop(conn, num_updates=10000):
     for update in range(num_updates):
-        rollout = collect_rollout(nav_model, rollout_length=SEQ_LEN)
+        rollout = collect_rollout(conn, nav_model, rollout_length=SEQ_LEN)
         # train on rollout
         ppo_update(rollout, nav_model, optimizer)
         # logging / saving model checkpoints etc.
         print(f"Finished update {update}")
-
+        send_reset(conn)

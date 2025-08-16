@@ -1,8 +1,10 @@
 use bevy::prelude::Component;
 use bevy_math::Vec3;
 
-#[derive(Component)]
-pub struct Player;
+#[derive(Component, Default)]
+pub struct Player {
+    pub(crate) freeze: bool,
+}
 
 pub const PLAYER_SPEED: f32 = 200.0;
 

@@ -22,7 +22,7 @@ use crate::human::player::move_player;
 use crate::map::setup_map;
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
-use crate::simulation::{DELTA_TIME, SimulationConfig, SimulationStepState, TICK_RATE, spawn_players, PlayerStep};
+use crate::simulation::{DELTA_TIME, PlayerStep, SimulationConfig, TICK_RATE, spawn_players};
 use crate::ui::{setup_ui, update_stats_text};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::ecs::schedule::ScheduleLabel;
@@ -31,12 +31,12 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use bevy_rapier3d::rapier::dynamics::IntegrationParameters;
 use bincode::encode_into_slice;
-use sensor::objective::{IsInObjective, check_trigger_zone};
+use sensor::objective::check_trigger_zone;
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
 
-const NB_AI_PLAYERS: usize = 50;
+const NB_AI_PLAYERS: usize = 150;
 
 #[derive(ScheduleLabel, Clone, Hash, PartialEq, Eq, Debug)]
 pub struct PostPhysics;
@@ -50,7 +50,7 @@ enum HeadMode {
 
 fn main() {
     let script = read_script_from_file("script.bin");
-    let app = create_app(HeadMode::HeadRealTime, script);
+    let app = create_app(HeadMode::HeadRush, script);
     run_simulation(app)
 }
 
