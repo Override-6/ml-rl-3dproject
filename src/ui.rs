@@ -1,22 +1,22 @@
+use crate::ai::model_control_pipeline::ModelCommands;
 use crate::component::player_character::PlayerInfoUI;
 use crate::player::Player;
-use crate::simulation::{PlayerEvaluation, SimulationStepState};
+use crate::simulation::{PlayerEvaluation, SimulationState, SimulationStepState};
 use bevy::color::palettes::basic::RED;
-use bevy::color::palettes::css::{BLUE, GREEN};
+use bevy::color::palettes::css::{GRAY, GREEN};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::prelude::{AlignSelf, Camera, Camera3d, ChildOf, Commands, Component, GlobalTransform, PositionType, Query, Res, Text, Transform, Vec3, Visibility, Window, With};
-use bevy::text::{JustifyText, TextColor, TextFont, TextLayout};
+use bevy::prelude::{
+    Camera, Camera3d, Commands, Component, GlobalTransform, Query, Res, Text, Transform, Vec3,
+    Window, With,
+};
+use bevy::text::{TextColor, TextFont};
 use bevy::ui::{Node, Val};
 use bevy_math::EulerRot;
 use bevy_rapier3d::prelude::Velocity;
-use crate::ai::model_control_pipeline::ModelCommands;
 
 // New component to mark our UI text
 #[derive(Component)]
 pub struct StatsText;
-
-#[derive(Component)]
-pub struct SuccessUIText;
 
 pub fn setup_ui(mut commands: Commands) {
     commands.spawn((
@@ -26,25 +26,6 @@ pub fn setup_ui(mut commands: Commands) {
             ..Default::default()
         },
         StatsText,
-    ));
-
-    commands.spawn((
-        Text::from("SUCCESS !"),
-        TextFont {
-            font_size: 30.0,
-            ..Default::default()
-        },
-        TextColor(GREEN.into()),
-        TextLayout::new_with_justify(JustifyText::Center),
-        Node {
-            align_self: AlignSelf::Center,
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            bottom: Val::Px(20.0),
-            ..Default::default()
-        },
-        Visibility::Hidden,
-        SuccessUIText,
     ));
 }
 
@@ -93,21 +74,16 @@ pub fn update_player_info(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     gt_q: Query<(&Player, &GlobalTransform)>,
-    mut player_info_q: Query<
-        (&mut Node, &mut Text, &mut TextColor, &PlayerInfoUI),
-    >,
-    sim_step: Res<SimulationStepState>,
-    model_commands: Res<ModelCommands>,
+    mut player_info_q: Query<(&mut Node, &mut Text, &mut TextColor, &PlayerInfoUI)>,
+    sim: Res<SimulationState>,
 ) -> Result<(), bevy::prelude::BevyError> {
-    if model_commands.current_step_is_reset {
+    if sim.resetting {
         return Ok(()); // do not update player info during environment reset
     }
     let window = windows.single()?;
     let (camera, camera_transform) = camera_q.single()?;
 
-    for (mut node, mut text, mut text_color, pui) in
-        player_info_q.iter_mut()
-    {
+    for (mut node, mut text, mut text_color, pui) in player_info_q.iter_mut() {
         let (player, player_transform) = gt_q.get(pui.0)?;
         // World position above the player
         let world_pos = player_transform.translation() + Vec3::Y * 1.5;
@@ -124,16 +100,16 @@ pub fn update_player_info(
             }
         }
 
-        let PlayerEvaluation { reward, done } = sim_step.player_states[player.id].evaluation;
+        let PlayerEvaluation { reward, done } = sim.current_step_state().player_states[player.id].evaluation;
+
+        text.0 = format!("{reward:.2}");
 
         if done {
-            text_color.0 = BLUE.into();
-            text.0 = String::from("DONE");
-            continue
-        }
-
-        text.0 = format!("{reward}");
-        if reward >= 0.0 {
+            text_color.0 = GRAY.into();
+            // text.0 = String::from("DONE");
+            // text.0 = String::default();
+            // continue;
+        } else if reward >= 0.0 {
             text_color.0 = GREEN.into();
         } else {
             text_color.0 = RED.into();

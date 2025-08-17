@@ -1,6 +1,6 @@
 use crate::ai::input::Input;
 use crate::ai::model_control_pipeline::SimulationPlayersInputs;
-use crate::player::{PLAYER_SPEED, PLAYER_TURN_SPEED, Player};
+use crate::player::{PLAYER_SPEED, PLAYER_TURN_SPEED, Player, PLAYER_JUMP_SPEED};
 use crate::sensor::ground_sensor::GroundContact;
 use crate::simulation::DELTA_TIME;
 use bevy::app::AppExit;
@@ -105,7 +105,7 @@ fn follow_script(
     // Jump
     if input_set & Input::Jump != 0 {
         if ground_contact.0 != 0 {
-            velocity.linvel.y += 400.0;
+            velocity.linvel.y += PLAYER_JUMP_SPEED;
         } else {
             // error!("Received jump instruction while not on ground!")
         }

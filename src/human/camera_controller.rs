@@ -1,11 +1,14 @@
 use crate::player::Player;
-use bevy::input::mouse::MouseMotion;
+use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::input::ButtonInput;
-use bevy::prelude::{BevyError, Camera3d, Commands, Component, EventReader, MouseButton, Query, Res, Transform, Vec3, With, Without};
+use bevy::prelude::{
+    BevyError, Camera3d, Commands, Component, EventReader, MouseButton, Query, Res, Transform,
+    Vec3, With, Without,
+};
 use bevy::window::Window;
 use bevy_math::Vec2;
 
-const CAMERA_DISTANCE: f32 = 150.0;
+const DEFAULT_CAMERA_DISTANCE: f32 = 150.0;
 
 #[derive(Component)]
 pub struct MainCamera;
@@ -15,6 +18,7 @@ pub struct CameraController {
     pub(crate) sensitivity: f32,
     pub(crate) pitch: f32,
     pub(crate) yaw: f32,
+    pub distance: f32,
 }
 
 pub fn spawn_camera_controller(mut commands: Commands) {
@@ -24,6 +28,7 @@ pub fn spawn_camera_controller(mut commands: Commands) {
             sensitivity: 0.0005,
             pitch: 30.0f32.to_radians(),
             yaw: 45.0f32.to_radians(),
+            distance: DEFAULT_CAMERA_DISTANCE,
         },
         Camera3d::default(),
         Transform::from_xyz(-50.0, 250.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -71,6 +76,16 @@ pub fn mouse_look(
     Ok(())
 }
 
+pub fn mouse_zoom(
+    mut evr_scroll: EventReader<MouseWheel>,
+    mut query: Query<&mut CameraController>,
+) {
+    let mut controller = query.single_mut().unwrap();
+    for ev in evr_scroll.read() {
+        controller.distance -= ev.y * 3.0;
+    }
+}
+
 pub fn camera_follow(
     player_query: Query<&Transform, With<Player>>,
     mut camera_query: Query<
@@ -79,7 +94,10 @@ pub fn camera_follow(
     >,
 ) -> Result<(), BevyError> {
     // Attach to the first player
-    let player_transform = player_query.iter().next().ok_or_else(|| BevyError::from("No player found."))?;
+    let player_transform = player_query
+        .iter()
+        .next()
+        .ok_or_else(|| BevyError::from("No player found."))?;
 
     let (mut camera_transform, controller) = camera_query.single_mut()?;
 
@@ -87,9 +105,9 @@ pub fn camera_follow(
     let pitch = controller.pitch;
 
     let camera_position = Vec3::new(
-        player_transform.translation.x + yaw.cos() * pitch.cos() * CAMERA_DISTANCE,
-        player_transform.translation.y + pitch.sin() * CAMERA_DISTANCE,
-        player_transform.translation.z + yaw.sin() * pitch.cos() * CAMERA_DISTANCE,
+        player_transform.translation.x + yaw.cos() * pitch.cos() * controller.distance,
+        player_transform.translation.y + pitch.sin() * controller.distance,
+        player_transform.translation.z + yaw.sin() * pitch.cos() * controller.distance,
     );
 
     camera_transform.translation = camera_position;

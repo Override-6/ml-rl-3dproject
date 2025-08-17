@@ -3,21 +3,19 @@ use crate::map::ComponentType;
 use crate::player::Player;
 use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
-use crate::simulation::{
-    LaserHit, PlayerEvaluation, PlayerState, PlayerStep, SimulationStepState, evaluate_player,
-};
+use crate::simulation::{LaserHit, PlayerEvaluation, PlayerState, PlayerStep, SimulationStepState, evaluate_player, SimulationState};
 use bevy::prelude::{Commands, Query, Res, ResMut, Resource, Transform, With};
 use bevy_math::u32;
 use bevy_rapier3d::prelude::{Sleeping, Velocity};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::ops::Deref;
 use std::thread::sleep;
 use std::time::Duration;
 
 #[derive(Resource)]
 pub struct ModelCommands {
     stream: TcpStream,
-    pub current_step_is_reset: bool,
 }
 
 #[derive(Resource)]
@@ -76,14 +74,12 @@ pub fn setup_model_connection(mut commands: Commands) {
     let stream = TcpStream::connect("localhost:9999").unwrap();
     commands.insert_resource(ModelCommands {
         stream,
-        current_step_is_reset: false,
     });
     sleep(Duration::from_secs(1));
 }
 
 pub fn sync_state_outputs(
-    last_state: Option<Res<SimulationStepState>>,
-    mut commands: Commands,
+    mut state: ResMut<SimulationState>,
     mut model_commands: ResMut<ModelCommands>,
     players: Query<
         (
@@ -97,15 +93,12 @@ pub fn sync_state_outputs(
         With<Player>,
     >,
 ) {
-    print!("Sending state...");
-    let state = evaluate_players(last_state, players, model_commands.current_step_is_reset);
-    commands.insert_resource(state.clone());
-    model_commands.send_step_outputs(state).unwrap();
-    println!("\rSent state.")
+    let step_state = evaluate_players(players, state.deref());
+    state.push_step_state(step_state.clone());
+    model_commands.send_step_outputs(step_state).unwrap();
 }
 
 fn evaluate_players(
-    last_state: Option<Res<SimulationStepState>>,
     mut players: Query<
         (
             &PlayerVibrissae,
@@ -117,8 +110,11 @@ fn evaluate_players(
         ),
         With<Player>,
     >,
-    just_reset: bool,
+    sim: &SimulationState,
 ) -> SimulationStepState {
+    let c = players.iter_mut().count();
+    let last_state = sim.previous_step_state();
+
     let player_states: Vec<_> = players
         .iter_mut()
         .map(|(vibrissae, velocity, transform, itz, player, sleeping)| {
@@ -150,14 +146,17 @@ fn evaluate_players(
         .map(|(state, itz, mut player, mut velocity, mut sleeping)| {
             let evaluation = last_state
                 .as_ref()
-                .filter(|_| !just_reset)
                 .map_or(PlayerEvaluation::default(), |ls| {
-                    evaluate_player(&ls.player_states[player.id].state, &state, itz.0)
+                    let last_player_step = &ls.player_states[player.id];
+                    // keep null reward when the player already won
+                    if last_player_step.evaluation.done { last_player_step.evaluation.clone() } else {
+                        evaluate_player(&last_player_step.state, &state, itz.0, sim)
+                    }
                 });
             if evaluation.done && !player.freeze {
-                println!("Froze player {} as it reached a terminal state.", player.id);
                 player.freeze = true;
                 sleeping.sleeping = true;
+                player.objective_reached_at_timestep = sim.timestep as i32;
                 *velocity = Velocity::default();
             }
             PlayerStep { evaluation, state }
@@ -169,18 +168,19 @@ fn evaluate_players(
 
 pub fn poll_model_directive(
     mut model_commands: ResMut<ModelCommands>,
+    mut sim: ResMut<SimulationState>,
     mut commands: Commands,
 ) {
-    print!("Waiting for next model directive...");
+    // println!("Waiting for next model directive...");
     let directive = model_commands.pull_model_directive().unwrap();
 
     match directive {
         ModelDirective::ResetSimulation => {
-            println!("\rReceived reset packet, resetting simulation...");
-            model_commands.current_step_is_reset = true;
+            // println!("\rReceived reset packet, resetting simulation...");
+            sim.resetting = true;
         }
         ModelDirective::NexStep(inputs) => {
-            println!("\rReceived model outputs, advancing simulation...");
+            // println!("\rReceived model outputs, advancing simulation...");
             commands.insert_resource(SimulationPlayersInputs { inputs });
         }
     }

@@ -1,10 +1,11 @@
 use crate::map::ComponentType;
 use crate::player::{PLAYER_LASER_COUNT, Player};
 use bevy::color::palettes::basic::{BLUE, RED};
-use bevy::prelude::{BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, With};
+use bevy::prelude::{BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, Res, With};
 use bevy_math::Vec3;
 use bevy_rapier3d::plugin::ReadRapierContext;
 use bevy_rapier3d::prelude::QueryFilter;
+use crate::simulation::SimulationState;
 
 pub const LASER_LENGTH: f32 = 3000.0;
 
@@ -131,29 +132,37 @@ pub fn update_vibrissae_lasers(
 pub fn debug_render_lasers(
     mut gizmos: Gizmos,
     query: Query<(&PlayerVibrissae, &GlobalTransform), With<Player>>,
+    sim: Res<SimulationState>
 ) {
     // Only debug on controlled player (which is first player)
-    let (vibrissae, player_gt) = query.iter().next().unwrap();
+    #[allow(clippy::never_loop)]
+    for (vibrissae, player_gt) in query.iter()  {
+        let origin = player_gt.translation();
+        let direction = player_gt.rotation();
 
-    let origin = player_gt.translation();
-    let direction = player_gt.rotation();
+        for laser in vibrissae.lasers.iter() {
+            let Some(hit) = &laser.hit else {
+                gizmos.line(
+                    origin,
+                    origin + (direction * laser.direction) * LASER_LENGTH,
+                    BLUE,
+                );
+                continue;
+            };
 
-    for laser in vibrissae.lasers.iter() {
-        let Some(hit) = &laser.hit else {
             gizmos.line(
                 origin,
                 origin + (direction * laser.direction) * LASER_LENGTH,
-                BLUE,
+                RED,
             );
-            continue;
-        };
 
-        gizmos.line(
-            origin,
-            origin + (direction * laser.direction) * LASER_LENGTH,
-            RED,
-        );
-
-        gizmos.sphere(hit.point, 3.0, RED);
+            gizmos.sphere(hit.point, 3.0, RED);
+        }
+        if !sim.debug.print_all_lasers {
+            // if we dont want to print all lasers, print only the lasers of the first player (which is the observed player)
+            return
+        }
     }
+
+
 }

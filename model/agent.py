@@ -1,17 +1,21 @@
 # Requires: tensorflow >= 2.x
+import asyncio
+import multiprocessing
 import os
 
 import numpy as np
 
 from data import Input
+from rw_lock import AsyncRWLock
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 import tensorflow as tf
-from tensorflow.keras import layers, Model
+from tensorflow.keras import layers
 
-from simulation import read_player_states, send_model_outputs, send_reset
+from simulation import read_player_states, send_model_outputs
 
 import os
+
 os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/usr/lib/cuda"
 
 # ------------------------
@@ -22,14 +26,14 @@ NB_COMPONENT_TYPES = 5
 NUM_ACTIONS = len(Input)  # number of binary action outputs
 FEATURE_DIM = 128
 LSTM_UNITS = 64
-SEQ_LEN = 32  # rollout horizon (timesteps collected before update)
+SEQ_LEN = 20 * 5  # rollout horizon (timesteps collected before update). is simulation's hz times 5 seconds
 PPO_EPOCHS = 4
 MINIBATCH_SIZE = 64
 CLIP_EPS = 0.2
 VALUE_COEFF = 0.5
-ENTROPY_COEFF = 0.01
+ENTROPY_COEFF = 0.05
 LR = 3e-4
-GAMMA = 0.99
+GAMMA = 0.95
 LAMBDA = 0.95
 
 
@@ -68,6 +72,19 @@ class NavigationModel(tf.keras.Model):
         # Policy uses sigmoid for independent binary actions
         self.policy_head = layers.Dense(NUM_ACTIONS, activation='sigmoid', name="policy")
         self.value_head = layers.Dense(1, activation=None, name="value")
+
+    def copy_from(self, other: "NavigationModel"):
+        """
+        Copy all weights from another NavigationModel into self.
+        """
+        if not isinstance(other, NavigationModel):
+            raise ValueError("Can only copy from another NavigationModel instance.")
+
+        assert self is not other
+
+        # Iterate over all layers and set weights
+        for self_layer, other_layer in zip(self.layers, other.layers):
+            self_layer.set_weights(other_layer.get_weights())
 
     def extract_features(self, pos, angvel, linvel, rot, laser_dist, laser_type):
         """Extract single-timestep features. Inputs are tensors with shape (batch, ...)"""
@@ -164,10 +181,26 @@ class NavigationModel(tf.keras.Model):
         return policy_seq, values_seq, h_last, c_last
 
 
-# instantiate
-nav_model = NavigationModel()
-optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
+# instantiate train and prediction model
+predict_model = NavigationModel()
+train_model = NavigationModel()
+train_model.copy_from(predict_model)
 
+model_update_lock = AsyncRWLock()
+
+
+async def update_prediction_model():
+    await model_update_lock.acquire_write()
+    train_model.copy_from(predict_model)
+    await model_update_lock.acquire_write()
+
+async def predict(pos, angvel, linvel, rot, laser_dist, laser_type, h, c):
+    await model_update_lock.acquire_read()
+    result = await predict_model.step(pos, angvel, linvel, rot, laser_dist, laser_type, h, c)
+    await model_update_lock.release_read()
+    return result
+
+optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
 
 # ------------------------
 # Utils: probability/log-prob for multi-binary actions (Bernoulli)
@@ -213,10 +246,10 @@ def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
     return advantages, returns
 
 
-# ------------------------
 # PPO update for collected rollout
-# ------------------------
-def ppo_update(rollout, nav_model, optimizer):
+# SHOULD ONLY BE CALLED IN THE MODEL TRAINING THREAD LOOP.
+# updating training model is not thread safe
+async def ppo_update(rollout, optimizer):
     """
     rollout: dict with keys:
       pos: (T, N, 3)
@@ -244,21 +277,15 @@ def ppo_update(rollout, nav_model, optimizer):
     h_last = rollout['h_last']  # states after final step, shape (N, LSTM_UNITS)
     c_last = rollout['c_last']
 
-    last_policy, last_value, _, _ = nav_model.step(
+    last_policy, last_value, _, _ = train_model.step(
         last_pos, last_angvel, last_linvel, last_rot, last_laser_dist, last_laser_type, h_last, c_last
     )
-    last_value = last_value.numpy()  # (N, SEQ_LEN)
+    last_value = last_value.numpy()  # (N,)
 
     # compute advantages & returns
     advantages, returns = compute_gae(
         rollout['rewards'], rollout['values'], rollout['dones'], last_value, gamma=GAMMA, lam=LAMBDA
     )
-
-    # Flatten dimensions: (T*N, ...)
-    def flatten_time_batch(x):
-        # x shaped (T,N, *rest)
-        s = x.shape
-        return x.reshape((s[0] * s[1],) + s[2:])
 
     # Prepare training data: we will train across epochs using minibatches
     pos_seq = np.transpose(rollout['pos'], (1, 0, 2))  # (N, T, 3)
@@ -300,7 +327,7 @@ def ppo_update(rollout, nav_model, optimizer):
 
             # Forward pass: get policy_seq and values_seq from model
             with tf.GradientTape() as tape:
-                policy_seq, values_seq_pred, _, _ = nav_model.forward_sequence(
+                policy_seq, values_seq_pred, _, _ = train_model.forward_sequence(
                     mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type, h0=mb_h0, c0=mb_c0
                 )
                 # shapes: policy_seq (mb, T, NUM_ACTIONS), values_seq_pred (mb, T)
@@ -340,9 +367,10 @@ def ppo_update(rollout, nav_model, optimizer):
 
                 total_loss = policy_loss + value_loss + entropy_loss
 
-            grads = tape.gradient(total_loss, nav_model.trainable_variables)
-            optimizer.apply_gradients(zip(grads, nav_model.trainable_variables))
+            grads = tape.gradient(total_loss, train_model.trainable_variables)
+            optimizer.apply_gradients(zip(grads, train_model.trainable_variables))
 
+    await update_prediction_model()
     # done with update
     return
 
@@ -351,7 +379,7 @@ def ppo_update(rollout, nav_model, optimizer):
 # Rollout collector (interacts with simulation)
 # ------------------------
 # -- Placeholder functions for sim interaction: replace with your IPC/FFI/pyO3 calls.
-def sim_get_states(conn):
+async def sim_get_states(reader):
     """
     Replace with code that returns per-player states from the simulation.
     Should return dictionaries of numpy arrays with shape (Nplayers, ...).
@@ -364,10 +392,10 @@ def sim_get_states(conn):
         "lasers": { "dist": np.array((N, LASERS, 1)), "type": np.array((N, LASERS)) }
       }
     """
-    return read_player_states(conn)
+    return await read_player_states(reader)
 
 
-def sim_send_actions(conn, actions_per_player):
+async def sim_send_actions(writer, actions_per_player):
     """
     Send actions back to sim. actions_per_player: numpy array shape (N, NUM_ACTIONS) 0/1
     """
@@ -379,20 +407,19 @@ def sim_send_actions(conn, actions_per_player):
 
     # Multiply and sum along axis 1
     actions_per_player = arr.dot(powers_of_two)
-    return send_model_outputs(conn, actions_per_player)
+    return await send_model_outputs(writer, actions_per_player)
 
 
 # Example rollout collection loop skeleton
-def collect_rollout(conn, nav_model, rollout_length=SEQ_LEN):
+async def collect_rollout(reader, writer, rollout_length=SEQ_LEN):
     """
     Collect a rollout of length T for all N players currently in sim.
     Returns the 'rollout' dict used by ppo_update.
     """
     # initial read to get number of players N and initial states
-    sim_state = sim_get_states(conn)
+    sim_state = await sim_get_states(reader)
     N = sim_state['position'].shape[0]
     T = rollout_length
-
 
     # buffers (T, N, ...)
     pos_buf = np.zeros((T, N, 3), dtype=np.float32)
@@ -433,7 +460,7 @@ def collect_rollout(conn, nav_model, rollout_length=SEQ_LEN):
         laser_type_buf[t] = laser_type
 
         # run model step (batch)
-        policy_tf, value_tf, h_tf, c_tf = nav_model.step(
+        policy_tf, value_tf, h_tf, c_tf = await predict(
             tf.convert_to_tensor(pos), tf.convert_to_tensor(ang),
             tf.convert_to_tensor(lin), tf.convert_to_tensor(rot),
             tf.convert_to_tensor(laser_dist), tf.convert_to_tensor(laser_type),
@@ -448,16 +475,17 @@ def collect_rollout(conn, nav_model, rollout_length=SEQ_LEN):
         actions = (np.random.rand(*policy.shape) < policy).astype(np.float32)  # (N, SEQ_LEN, NUM_ACTIONS,)
         # compute log_probs under the policy we used (store old_logp for PPO)
         eps = 1e-8
-        logp = np.sum(actions * np.log(policy + eps) + (1 - actions) * np.log(1 - policy + eps), axis=-1)  # (N, SEQ_LEN)
+        logp = np.sum(actions * np.log(policy + eps) + (1 - actions) * np.log(1 - policy + eps),
+                      axis=-1)  # (N, SEQ_LEN)
 
         # send actions to simulation
-        sim_send_actions(conn, actions)
+        await sim_send_actions(writer, actions)
 
         # after sim step, read rewards and done flags for each player
         # assuming you can call sim_get_rewards() or sim provides them in next sim_get_states()
         # For simplicity, we call sim_get_states again to read reward/done or make a dedicated call
         # Replace the following with your actual reward/done retrieval
-        sim_state = sim_get_states(conn)  # compute from the next state the rewards, dones etc
+        sim_state = await sim_get_states(reader)  # compute from the next state the rewards, dones etc
         # Here you must obtain rewards and done for each player. Replace these lines:
         rewards = sim_state["reward"]
         dones = sim_state["done"]
@@ -469,12 +497,11 @@ def collect_rollout(conn, nav_model, rollout_length=SEQ_LEN):
         rewards_buf[t] = rewards
         dones_buf[t] = dones
 
-        # Optionally reset LSTM states where done==1
+        # reset LSTM states where done==1
         for i in range(N):
             if dones[i]:
                 h[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
                 c[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
-
 
     rollout = {
         'pos': pos_buf,
@@ -496,11 +523,28 @@ def collect_rollout(conn, nav_model, rollout_length=SEQ_LEN):
     return rollout
 
 
-def train_loop(conn, num_updates=10000):
-    for update in range(num_updates):
-        rollout = collect_rollout(conn, nav_model, rollout_length=SEQ_LEN)
-        send_reset(conn) # reset environment during ppo_update
-        # train on rollout
-        ppo_update(rollout, nav_model, optimizer)
-        # logging / saving model checkpoints etc.
-        print(f"Finished update {update}")
+async def agent_loop(rollout_queue: multiprocessing.Queue):
+    try:
+        num_updates = 10000
+        for update in range(num_updates):
+            # merge all rollouts
+            merged_rollout = await rollout_queue.get() # at least one rollout
+            while not rollout_queue.empty():
+                rollout = rollout_queue.get_nowait()
+                if not rollout:
+                    continue
+                print("New rollout merged !")
+                for k, v in rollout.items():
+                    if k not in merged_rollout:
+                        merged_rollout[k] = v
+                    else:
+                        merged_rollout[k] = np.concatenate([merged_rollout[k], v], axis=0 if k in ["h0", "c0", "h_last", "c_last"] else 1)
+
+            print("training and Updating model... N=", merged_rollout["h_last"].shape[0])
+            # train on rollout
+            await ppo_update(merged_rollout, optimizer)
+            # logging / saving model checkpoints etc.
+            print(f"Finished update {update}")
+    except Exception as e:
+        print(e)
+        raise e

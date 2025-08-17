@@ -31,6 +31,12 @@ pub fn spawn_player_characters(
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
 ) {
     let mut rng = rand::rng();
+    let player_material = materials.map(|mut m| MeshMaterial3d(m.add(Color::srgb(0.7, 1.0, 0.5))));
+    let player_mesh = meshes.map(|mut m| Mesh3d(m.add(Cuboid::new(
+        PLAYER_WIDTH,
+        PLAYER_HEIGHT,
+        PLAYER_WIDTH,
+    ))));
     for entity in players.iter() {
         let mut entity_commands = commands.entity(entity);
         entity_commands.insert((
@@ -39,7 +45,7 @@ pub fn spawn_player_characters(
             GroundContact(0),
             Transform::from_xyz(
                 rng.random_range(-30.0..30.0),
-                0.0,
+                10.0,
                 rng.random_range(-30.0..30.0),
             ),
             Velocity::default(),
@@ -56,15 +62,11 @@ pub fn spawn_player_characters(
                 combine_rule: CoefficientCombineRule::Min,
             },
         ));
-        if let Some(meshes) = meshes.as_mut() {
-            entity_commands.insert(Mesh3d(meshes.add(Cuboid::new(
-                PLAYER_WIDTH,
-                PLAYER_HEIGHT,
-                PLAYER_WIDTH,
-            ))));
+        if let Some(mesh) = player_mesh.as_ref() {
+            entity_commands.insert(mesh.clone());
         }
-        if let Some(materials) = materials.as_mut() {
-            entity_commands.insert(MeshMaterial3d(materials.add(Color::srgb(0.7, 1.0, 0.5))));
+        if let Some(material) = player_material.as_ref() {
+            entity_commands.insert(material.clone());
         }
         entity_commands.with_children(|parent| {
             // spawn ground detection
@@ -80,7 +82,7 @@ pub fn spawn_player_characters(
             ));
         });
 
-        if materials.is_some() {
+        if player_material.is_some() {
             // Spawn Player Info UI if running in rendering mode
             commands.spawn((
                 Text::new("<Info>"),
