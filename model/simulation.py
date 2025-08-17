@@ -1,3 +1,4 @@
+import socket
 import struct
 
 import numpy as np
@@ -5,26 +6,26 @@ import numpy as np
 PLAYER_LASER_COUNT = 5  # adjust to match your Rust constant
 
 
-async def recv_exact(reader, size):
+def recv_exact(conn: socket.socket, size):
     buf = b''
     while len(buf) < size:
-        chunk = await reader.read(size - len(buf))
+        chunk = conn.recv(size - len(buf))
         if not chunk:
             raise ConnectionError("Client disconnected")
         buf += chunk
     return buf
 
 
-async def read_player_states(reader):
+def read_player_states(conn):
     # Read player count (u32)
     # print("Reading player states...")
-    raw_len = await recv_exact(reader, 4)
+    raw_len = recv_exact(conn, 4)
     N = struct.unpack('<I', raw_len)[0]
 
     # Read PlayerStates
     player_state_size = 96  # sizeof(PlayerState);
 
-    data = await recv_exact(reader, N * player_state_size)
+    data = recv_exact(conn, N * player_state_size)
 
     state = {
         "reward": np.zeros(shape=(N,), dtype=np.float32),
@@ -66,16 +67,13 @@ async def read_player_states(reader):
     return state
 
 
-async def send_model_outputs(writer, outputs):
-    writer.write(struct.pack('<I', 1)) # packet type: send_model_output
-    writer.write(struct.pack('<I', len(outputs)))  # send count
+def send_model_outputs(conn, outputs):
+    conn.sendall(struct.pack('<I', 1)) # packet type: send_model_output
+    conn.sendall(struct.pack('<I', len(outputs)))  # send count
     for inp in outputs:
-        writer.write(struct.pack('B', inp))
-
-    await writer.drain()
+        conn.sendall(struct.pack('B', inp))
 
     # print("Sent model outputs")
 
-async def send_reset(writer):
-    writer.write(struct.pack('<I', 0)) # packet type: reset simulation
-    await writer.drain()
+def send_reset(conn):
+    conn.sendall(struct.pack('<I', 0)) # packet type: reset simulation

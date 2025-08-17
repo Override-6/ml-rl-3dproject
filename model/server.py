@@ -1,43 +1,52 @@
-import asyncio
+import queue
+import socket
 import threading
+from threading import Thread
 
 import agent
+from simulation import send_reset
 
-rollout_queue = asyncio.Queue()
+rollout_queue = queue.Queue()
 
-def handle_client_thread(reader, writer):
-    """Run in a dedicated thread for each client."""
-    async def client_loop():
-        addr = writer.get_extra_info('peername')
-        print(f"[Thread] Connected with {addr}")
-        try:
-            while True:
-                rollout = await agent.collect_rollout(reader, writer)
-                await rollout_queue.put(rollout)
-        except Exception as e:
-            print(f"[Thread] Error: {e}")
-        finally:
-            writer.close()
-            await writer.wait_closed()
+def handle_client_thread(conn, rollout_queue):
+    """Dedicated thread for each client using blocking I/O."""
 
-    # Run the async loop in this thread
-    asyncio.run(client_loop())
+    addr = conn.getpeername()
+    print(f"[Thread] Connected with {addr}")
 
-async def handle_client(reader, writer):
-    # Spawn a thread for this client
-    thread = threading.Thread(target=handle_client_thread, args=(reader, writer))
-    thread.start()
+    try:
+        while True:
+            # Blocking I/O: use agent.collect_rollout_blocking
+            # You need a version of your agent that works with sockets directly
+            rollout = agent.collect_rollout(conn)
+            send_reset(conn)
+            # Use asyncio.run_coroutine_threadsafe to put into asyncio queue
+            rollout_queue.put(rollout)
+    except Exception as e:
+        print(f"[Thread] Error: {e}")
+        raise
+    finally:
+        conn.close()
+        print(f"[Thread] Disconnected {addr}")
 
-
-async def main():
+def main():
     HOST = 'localhost'
     PORT = 9999
-    asyncio.create_task(agent.agent_loop(rollout_queue))
 
-    server = await asyncio.start_server(handle_client, HOST, PORT)
-    async with server:
-        print(f"Model server listening on {HOST}:{PORT}")
-        await server.serve_forever()
+    # Start agent loop
+    Thread(target=agent.agent_loop, args=[rollout_queue]).start()
+
+    # Create server socket
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind((HOST, PORT))
+    server_sock.listen()
+    print(f"Threaded server listening on {HOST}:{PORT}")
+
+    while True:
+        client_sock, _ = server_sock.accept()
+        thread = threading.Thread(target=handle_client_thread, args=(client_sock, rollout_queue))
+        thread.start()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
