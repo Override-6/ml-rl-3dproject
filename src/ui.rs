@@ -5,10 +5,7 @@ use crate::simulation::{PlayerEvaluation, SimulationState, SimulationStepState};
 use bevy::color::palettes::basic::RED;
 use bevy::color::palettes::css::{GRAY, GREEN};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::prelude::{
-    Camera, Camera3d, Commands, Component, GlobalTransform, Query, Res, Text, Transform, Vec3,
-    Window, With,
-};
+use bevy::prelude::{Camera, Camera3d, Commands, Component, Display, GlobalTransform, Query, Res, Text, Transform, Vec3, Window, With};
 use bevy::text::{TextColor, TextFont};
 use bevy::ui::{Node, Val};
 use bevy_math::EulerRot;
@@ -77,7 +74,7 @@ pub fn update_player_info(
     mut player_info_q: Query<(&mut Node, &mut Text, &mut TextColor, &PlayerInfoUI)>,
     sim: Res<SimulationState>,
 ) -> Result<(), bevy::prelude::BevyError> {
-    if sim.resetting {
+    if sim.resetting || sim.timestep == 0 {
         return Ok(()); // do not update player info during environment reset
     }
     let window = windows.single()?;
@@ -85,6 +82,14 @@ pub fn update_player_info(
 
     for (mut node, mut text, mut text_color, pui) in player_info_q.iter_mut() {
         let (player, player_transform) = gt_q.get(pui.0)?;
+
+        if !sim.debug.print_players_rewards {
+            node.display = Display::None;
+            continue;
+        } else {
+            node.display = Display::default();
+        }
+
         // World position above the player
         let world_pos = player_transform.translation() + Vec3::Y * 1.5;
 

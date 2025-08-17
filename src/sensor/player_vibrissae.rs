@@ -134,8 +134,6 @@ pub fn debug_render_lasers(
     query: Query<(&PlayerVibrissae, &GlobalTransform), With<Player>>,
     sim: Res<SimulationState>
 ) {
-    // Only debug on controlled player (which is first player)
-    #[allow(clippy::never_loop)]
     for (vibrissae, player_gt) in query.iter()  {
         let origin = player_gt.translation();
         let direction = player_gt.rotation();

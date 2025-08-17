@@ -1,12 +1,17 @@
 # Requires: tensorflow >= 2.x
+import datetime
 import os
 import queue
+import signal
 import threading
+import time
+import warnings
 
 import numpy as np
+from tensorflow.data import AUTOTUNE
 
 from data import Input
-from rw_lock import AsyncRWLock
+from rw_lock import RWLock
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 import tensorflow as tf
@@ -26,14 +31,14 @@ NB_COMPONENT_TYPES = 5
 NUM_ACTIONS = len(Input)  # number of binary action outputs
 FEATURE_DIM = 128
 LSTM_UNITS = 64
-SEQ_LEN = 20 * 5  # rollout horizon (timesteps collected before update). is simulation's hz times 5 seconds
+SEQ_LEN = 10 * 10  # rollout horizon (timesteps collected before update). is simulation's hz times 5 seconds
 PPO_EPOCHS = 4
 MINIBATCH_SIZE = 64
 CLIP_EPS = 0.2
 VALUE_COEFF = 0.5
-ENTROPY_COEFF = 0.05
+ENTROPY_COEFF = 0.20
 LR = 3e-4
-GAMMA = 0.95
+GAMMA = 0.99
 LAMBDA = 0.95
 
 
@@ -41,7 +46,7 @@ LAMBDA = 0.95
 # Build model class
 # ------------------------
 class NavigationModel(tf.keras.Model):
-    def __init__(self):
+    def __init__(self, file: str | None = None):
         super().__init__()
 
         # feature extractor: per-timestep inputs -> feature vector
@@ -75,6 +80,11 @@ class NavigationModel(tf.keras.Model):
 
         self._dummy_build()
 
+        if file and os.path.exists(file):
+            self.load_weights(file)
+        else:
+            warnings.warn(f"File {file} not found, using random weights...")
+
     def copy_from(self, other: "NavigationModel"):
         """
         Copy all weights from another NavigationModel into self.
@@ -104,6 +114,7 @@ class NavigationModel(tf.keras.Model):
             dummy_pos, dummy_angvel, dummy_linvel, dummy_rot,
             dummy_laser_dist, dummy_laser_type, dummy_h, dummy_c
         )
+        self.build((batch_size, 1, 1))
 
     def copy(self):
         new_model = NavigationModel()
@@ -206,22 +217,8 @@ class NavigationModel(tf.keras.Model):
 
 
 # instantiate train and prediction model
-predict_model = NavigationModel()
-train_model = NavigationModel()
-
-model_update_lock = threading.Lock()
-
-
-def update_prediction_model():
-    model_update_lock.acquire()
-    train_model.copy_from(predict_model)
-    model_update_lock.release()
-
-def copy_train_model():
-    model_update_lock.acquire()
-    result = train_model.copy()
-    model_update_lock.release()
-    return result
+nav_model = NavigationModel("model.keras")
+model_lock = RWLock()
 
 optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
 
@@ -272,130 +269,125 @@ def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
 # PPO update for collected rollout
 # SHOULD ONLY BE CALLED IN THE MODEL TRAINING THREAD LOOP.
 # updating training model is not thread safe
-def ppo_update(rollout, optimizer):
+# The train_step is compiled and expects tensors. It performs forward/backward
+# and apply_gradients inside the TF graph to reduce Python overhead.
+@tf.function
+def _train_step(mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
+                mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0):
+    # mb_pos: (mb, T, 3), mb_actions: (mb, T, NUM_ACTIONS), mb_old_logp: (mb, T)
+    with tf.GradientTape() as tape:
+        policy_seq, values_seq_pred, _, _ = nav_model.forward_sequence(
+            mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type, h0=mb_h0, c0=mb_c0
+        )
+        # policy_seq: (mb, T, NUM_ACTIONS), values_seq_pred: (mb, T)
+
+        probs_flat = tf.reshape(policy_seq, (-1, NUM_ACTIONS))  # (mb*T, NUM_ACTIONS)
+        actions_flat = tf.reshape(mb_actions, (-1, NUM_ACTIONS))
+        logp_flat = bernoulli_log_probs(probs_flat, actions_flat)  # (mb*T,)
+        logp = tf.reshape(logp_flat, (tf.shape(mb_actions)[0], tf.shape(mb_actions)[1]))  # (mb, T)
+
+        ratio = tf.exp(logp - mb_old_logp)
+        unclipped = ratio * mb_adv
+        clipped = tf.clip_by_value(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * mb_adv
+        policy_loss = -tf.reduce_mean(tf.minimum(unclipped, clipped))
+
+        value_loss = VALUE_COEFF * tf.reduce_mean(tf.square(mb_returns - values_seq_pred))
+
+        eps = 1e-8
+        entropy_per_action = -(policy_seq * tf.math.log(policy_seq + eps) +
+                               (1 - policy_seq) * tf.math.log(1 - policy_seq + eps))
+        entropy = tf.reduce_mean(entropy_per_action)
+        entropy_loss = -ENTROPY_COEFF * entropy
+
+        total_loss = policy_loss + value_loss + entropy_loss
+
+    grads = tape.gradient(total_loss, nav_model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, nav_model.trainable_variables))
+    return total_loss
+
+def ppo_update_tf(rollout):
     """
-    rollout: dict with keys:
-      pos: (T, N, 3)
-      angvel, linvel, rot: same as pos
-      laser_dist: (T, N, LASERS_PER_PLAYER, 1)
-      laser_type: (T, N, LASERS_PER_PLAYER)
-      actions: (T, N, SEQ_LEN, NUM_ACTIONS)   # sequence of actions per environment step
-      old_logp: (T, N, SEQ_LEN)
-      values: (T, N, SEQ_LEN)
-      rewards: (T, N)
-      dones: (T, N) 0/1
-      h0: (N, LSTM_UNITS) initial states at rollout start
-      c0: (N, LSTM_UNITS)
-    nav_model: model instance
+    Optimized PPO update that:
+      - Converts entire rollout to TF tensors once
+      - Builds a tf.data.Dataset of environments (N examples, each is a full T-sequence)
+      - Uses a compiled `_train_step` for minibatch updates
+
+    This function keeps behaviour compatible with your original shapes.
     """
-    T, N, _ = rollout['actions'].shape
+    # Convert rollout format from (T, N, ...) to (N, T, ...)
+    pos_seq = np.transpose(rollout['pos'], (1, 0, 2)).astype(np.float32)        # (N,T,3)
+    ang_seq = np.transpose(rollout['angvel'], (1, 0, 2)).astype(np.float32)
+    lin_seq = np.transpose(rollout['linvel'], (1, 0, 2)).astype(np.float32)
+    rot_seq = np.transpose(rollout['rot'], (1, 0, 2)).astype(np.float32)
+    laser_dist_seq = np.transpose(rollout['laser_dist'], (1, 0, 2, 3)).astype(np.float32)  # (N,T,LASERS,1)
+    laser_type_seq = np.transpose(rollout['laser_type'], (1, 0, 2)).astype(np.int32)
+    actions_seq = np.transpose(rollout['actions'], (1, 0, 2)).astype(np.float32)  # (N,T,NUM_ACTIONS)
+    old_logp_seq = np.transpose(rollout['old_logp'], (1, 0)).astype(np.float32)    # (N,T)
 
-    # compute last_value for bootstrap using nav_model (use last observation)
-    last_pos = rollout['pos'][-1]
-    last_angvel = rollout['angvel'][-1]
-    last_linvel = rollout['linvel'][-1]
-    last_rot = rollout['rot'][-1]
-    last_laser_dist = rollout['laser_dist'][-1]
-    last_laser_type = rollout['laser_type'][-1]
-    h_last = rollout['h_last']  # states after final step, shape (N, LSTM_UNITS)
-    c_last = rollout['c_last']
+    # compute last_value for bootstrap using train_model (but we'll run it on tensors)
+    last_pos = rollout['pos'][-1].astype(np.float32)  # (N,3)
+    last_ang = rollout['angvel'][-1].astype(np.float32)
+    last_lin = rollout['linvel'][-1].astype(np.float32)
+    last_rot = rollout['rot'][-1].astype(np.float32)
+    last_laser_dist = rollout['laser_dist'][-1].astype(np.float32)
+    last_laser_type = rollout['laser_type'][-1].astype(np.int32)
 
-    last_policy, last_value, _, _ = train_model.step(
-        last_pos, last_angvel, last_linvel, last_rot, last_laser_dist, last_laser_type, h_last, c_last
+    model_lock.acquire_read()
+    # Convert final states to tensors and call model once (no unnecessary .numpy() inside heavy loops)
+    last_policy_tf, last_value_tf, _, _ = nav_model.step(
+        tf.convert_to_tensor(last_pos), tf.convert_to_tensor(last_ang), tf.convert_to_tensor(last_lin),
+        tf.convert_to_tensor(last_rot), tf.convert_to_tensor(last_laser_dist), tf.convert_to_tensor(last_laser_type),
+        tf.convert_to_tensor(rollout['h_last'].astype(np.float32)), tf.convert_to_tensor(rollout['c_last'].astype(np.float32))
     )
-    last_value = last_value.numpy()  # (N,)
+    model_lock.release_read()
+    last_value = last_value_tf.numpy()  # (N,)
 
-    # compute advantages & returns
-    advantages, returns = compute_gae(
-        rollout['rewards'], rollout['values'], rollout['dones'], last_value, gamma=GAMMA, lam=LAMBDA
+    advantages, returns = compute_gae(rollout['rewards'], rollout['values'], rollout['dones'], last_value, gamma=GAMMA, lam=LAMBDA)
+
+    adv_seq = np.transpose(advantages, (1, 0)).astype(np.float32)   # (N,T)
+    returns_seq = np.transpose(returns, (1, 0)).astype(np.float32)  # (N,T)
+
+    # Convert everything once to TF tensors (shapes: N, T, ...)
+    pos_tf = tf.convert_to_tensor(pos_seq)
+    ang_tf = tf.convert_to_tensor(ang_seq)
+    lin_tf = tf.convert_to_tensor(lin_seq)
+    rot_tf = tf.convert_to_tensor(rot_seq)
+    laser_dist_tf = tf.convert_to_tensor(laser_dist_seq)
+    laser_type_tf = tf.convert_to_tensor(laser_type_seq)
+    actions_tf = tf.convert_to_tensor(actions_seq)
+    old_logp_tf = tf.convert_to_tensor(old_logp_seq)
+    adv_tf = tf.convert_to_tensor(adv_seq)
+    returns_tf = tf.convert_to_tensor(returns_seq)
+    h0_tf = tf.convert_to_tensor(rollout['h0'].astype(np.float32))
+    c0_tf = tf.convert_to_tensor(rollout['c0'].astype(np.float32))
+
+    # Build dataset: each example is one environment's full T-sequence
+    ds = tf.data.Dataset.from_tensor_slices(
+        (pos_tf, ang_tf, lin_tf, rot_tf, laser_dist_tf, laser_type_tf,
+         actions_tf, old_logp_tf, adv_tf, returns_tf, h0_tf, c0_tf)
     )
 
-    # Prepare training data: we will train across epochs using minibatches
-    pos_seq = np.transpose(rollout['pos'], (1, 0, 2))  # (N, T, 3)
-    ang_seq = np.transpose(rollout['angvel'], (1, 0, 2))
-    lin_seq = np.transpose(rollout['linvel'], (1, 0, 2))
-    rot_seq = np.transpose(rollout['rot'], (1, 0, 2))
-    laser_dist_seq = np.transpose(rollout['laser_dist'], (1, 0, 2, 3))  # (N,T, LASERS,1)
-    laser_type_seq = np.transpose(rollout['laser_type'], (1, 0, 2))
-    actions_seq = np.transpose(rollout['actions'], (1, 0, 2))
-    old_logp_seq = np.transpose(rollout['old_logp'], (1, 0))
-    adv_seq = np.transpose(advantages, (1, 0))
-    returns_seq = np.transpose(returns, (1, 0))
-    # values_seq = np.transpose(rollout['values'], (1, 0))
+    num_samples = pos_seq.shape[0]
 
-    # We'll train for multiple epochs and sample minibatches of environments
-    num_samples = N
-    idxs = np.arange(num_samples)
-
+    # Training loop: shuffle per-epoch and batch
     for epoch in range(PPO_EPOCHS):
-        np.random.shuffle(idxs)
-        print("Epoch {}".format(epoch + 1), end="\r")
-        for start in range(0, num_samples, MINIBATCH_SIZE):
-            mb_idxs = idxs[start:start + MINIBATCH_SIZE]
-            # minibatch sequences (batch = mb_size)
-            mb_pos = tf.convert_to_tensor(pos_seq[mb_idxs], dtype=tf.float32)  # (mb, T, 3)
-            mb_ang = tf.convert_to_tensor(ang_seq[mb_idxs], dtype=tf.float32)
-            mb_lin = tf.convert_to_tensor(lin_seq[mb_idxs], dtype=tf.float32)
-            mb_rot = tf.convert_to_tensor(rot_seq[mb_idxs], dtype=tf.float32)
-            mb_laser_dist = tf.convert_to_tensor(laser_dist_seq[mb_idxs], dtype=tf.float32)
-            mb_laser_type = tf.convert_to_tensor(laser_type_seq[mb_idxs], dtype=tf.int32)
-            mb_actions = tf.convert_to_tensor(actions_seq[mb_idxs], dtype=tf.float32)  # (mb, T, NUM_ACTIONS)
-            mb_old_logp = tf.convert_to_tensor(old_logp_seq[mb_idxs], dtype=tf.float32)  # (mb, T)
-            mb_adv = tf.convert_to_tensor(adv_seq[mb_idxs], dtype=tf.float32)  # (mb, T)
-            mb_returns = tf.convert_to_tensor(returns_seq[mb_idxs], dtype=tf.float32)
+        # print(f"Epoch {epoch + 1}")
+        # shuffle and batch per epoch to get different minibatches each epoch
+        ds_epoch = ds.shuffle(buffer_size=max(1024, num_samples), reshuffle_each_iteration=True)
+        ds_epoch = ds_epoch.batch(MINIBATCH_SIZE, drop_remainder=False).prefetch(AUTOTUNE)
 
-            # Use initial LSTM states at rollout start for these envs
-            mb_h0 = tf.convert_to_tensor(rollout['h0'][mb_idxs], dtype=tf.float32)
-            mb_c0 = tf.convert_to_tensor(rollout['c0'][mb_idxs], dtype=tf.float32)
+        for batch in ds_epoch:
+            (mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
+             mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0) = batch
 
-            # Forward pass: get policy_seq and values_seq from model
-            with tf.GradientTape() as tape:
-                policy_seq, values_seq_pred, _, _ = train_model.forward_sequence(
-                    mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type, h0=mb_h0, c0=mb_c0
-                )
-                # shapes: policy_seq (mb, T, NUM_ACTIONS), values_seq_pred (mb, T)
+            model_lock.acquire_write()
+            # call compiled train step
+            _ = _train_step(mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
+                            mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
+            model_lock.release_write()
 
-                # compute log_probs under current policy
-                # flatten time+batch for convenience
-                probs_flat = tf.reshape(policy_seq, (-1, NUM_ACTIONS))  # (mb*T, NUM_ACTIONS)
-                actions_flat = tf.reshape(mb_actions, (-1, NUM_ACTIONS))
-                logp_flat = bernoulli_log_probs(probs_flat, actions_flat)  # (mb*T,)
-                logp = tf.reshape(logp_flat, (tf.shape(mb_actions)[0], tf.shape(mb_actions)[1]))  # (mb, T)
-
-                # likewise flatten predicted values
-                values_flat = tf.reshape(values_seq_pred, (-1,))
-                values_pred = tf.reshape(values_flat, (tf.shape(mb_actions)[0], tf.shape(mb_actions)[1]))  # (mb, T)
-
-                # ratio = exp(new_logp - old_logp)
-                ratio = tf.exp(logp - mb_old_logp)
-
-                # advantages & returns as tensors
-                mb_adv_ = mb_adv
-                mb_ret_ = mb_returns
-
-                # policy loss with clipping (sum over time, mean over minibatch)
-                unclipped = ratio * mb_adv_
-                clipped = tf.clip_by_value(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * mb_adv_
-                policy_loss = -tf.reduce_mean(tf.minimum(unclipped, clipped))
-
-                # value loss (MSE)
-                value_loss = VALUE_COEFF * tf.reduce_mean(tf.square(mb_ret_ - values_pred))
-
-                # entropy (encourage exploration) average over actions and time
-                eps = 1e-8
-                entropy_per_action = -(policy_seq * tf.math.log(policy_seq + eps) + (1 - policy_seq) * tf.math.log(
-                    1 - policy_seq + eps))
-                entropy = tf.reduce_mean(entropy_per_action)
-                entropy_loss = -ENTROPY_COEFF * entropy
-
-                total_loss = policy_loss + value_loss + entropy_loss
-
-            grads = tape.gradient(total_loss, train_model.trainable_variables)
-            optimizer.apply_gradients(zip(grads, train_model.trainable_variables))
-
-    update_prediction_model()
-    # done with update
     return
+
 
 
 # ------------------------
@@ -432,13 +424,11 @@ def sim_send_actions(conn, actions_per_player):
     return send_model_outputs(conn, actions_per_player)
 
 
-# Example rollout collection loop skeleton
 def collect_rollout(conn, rollout_length=SEQ_LEN):
     """
     Collect a rollout of length T for all N players currently in sim.
     Returns the 'rollout' dict used by ppo_update.
     """
-    prediction_model = copy_train_model()
     # initial read to get number of players N and initial states
     sim_state = sim_get_states(conn)
     N = sim_state['position'].shape[0]
@@ -466,6 +456,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     h0 = h.copy()
     c0 = c.copy()
 
+
     for t in range(T):
         pos = sim_state['position'].astype(np.float32)
         ang = sim_state['angvel'].astype(np.float32)
@@ -482,13 +473,15 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         laser_dist_buf[t] = laser_dist
         laser_type_buf[t] = laser_type
 
+        model_lock.acquire_read()
         # run model step (batch)
-        policy_tf, value_tf, h_tf, c_tf = prediction_model.step(
+        policy_tf, value_tf, h_tf, c_tf = nav_model.step(
             tf.convert_to_tensor(pos), tf.convert_to_tensor(ang),
             tf.convert_to_tensor(lin), tf.convert_to_tensor(rot),
             tf.convert_to_tensor(laser_dist), tf.convert_to_tensor(laser_type),
             tf.convert_to_tensor(h), tf.convert_to_tensor(c)
         )
+        model_lock.release_read()
         policy = policy_tf.numpy()  # (N, NUM_ACTIONS)
         value = value_tf.numpy()
         h = h_tf.numpy()
@@ -525,7 +518,6 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
             if dones[i]:
                 h[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
                 c[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
-
     rollout = {
         'pos': pos_buf,
         'angvel': ang_buf,
@@ -545,28 +537,51 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     }
     return rollout
 
+stop = False
+
+def save_model(s, f):
+    global stop
+    stop = True
+    print("saving model")
+    nav_model.save("model.keras")
+    exit(1)
+
+signal.signal(signal.SIGINT, save_model)
+signal.signal(signal.SIGTERM, save_model)
+
+def analyze_rollout(rollout: dict):
+    avg_reward = np.mean(rollout["rewards"])
+    N = rollout["h0"].shape[0]
+    print("Rollout N =", N)
+    print("Reward average: {}".format(avg_reward))
+    pass
 
 def agent_loop(rollout_queue: queue.Queue):
     try:
         num_updates = 10000
         for update in range(num_updates):
+            if stop:
+                return
+
             # merge all rollouts
             merged_rollout = rollout_queue.get() # at least one rollout
             while rollout_queue.qsize() > 0:
                 rollout = rollout_queue.get_nowait()
                 if not rollout:
                     continue
+
                 for k, v in rollout.items():
                     if k not in merged_rollout:
                         merged_rollout[k] = v
                     else:
                         merged_rollout[k] = np.concatenate([merged_rollout[k], v], axis=0 if k in ["h0", "c0", "h_last", "c_last"] else 1)
 
-            print("training and Updating model... N=", merged_rollout["h_last"].shape[0])
+            analyze_rollout(merged_rollout)
             # train on rollout
-            ppo_update(merged_rollout, optimizer)
+            print("Training on rollouts, this might cause simulations to halt for a moment")
+            ppo_update_tf(merged_rollout)
             # logging / saving model checkpoints etc.
             print(f"Finished update {update}")
     except Exception as e:
         print(e)
-        raise e
+        exit(1)

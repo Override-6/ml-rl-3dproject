@@ -8,7 +8,7 @@ from simulation import send_reset
 
 rollout_queue = queue.Queue()
 
-def handle_client_thread(conn, rollout_queue):
+def handle_client_thread(conn, rollout_queue: queue.Queue):
     """Dedicated thread for each client using blocking I/O."""
 
     addr = conn.getpeername()
@@ -21,7 +21,7 @@ def handle_client_thread(conn, rollout_queue):
             rollout = agent.collect_rollout(conn)
             send_reset(conn)
             # Use asyncio.run_coroutine_threadsafe to put into asyncio queue
-            rollout_queue.put(rollout)
+            rollout_queue.put_nowait(rollout)
     except Exception as e:
         print(f"[Thread] Error: {e}")
         raise

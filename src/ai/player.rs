@@ -2,7 +2,7 @@ use crate::ai::input::Input;
 use crate::ai::model_control_pipeline::SimulationPlayersInputs;
 use crate::player::{PLAYER_SPEED, PLAYER_TURN_SPEED, Player, PLAYER_JUMP_SPEED};
 use crate::sensor::ground_sensor::GroundContact;
-use crate::simulation::DELTA_TIME;
+use crate::simulation::{SimulationState, DELTA_TIME};
 use bevy::app::AppExit;
 use bevy::prelude::{BevyError, Component, EventWriter, Query, Res, Transform, Vec3, With};
 use bevy::time::Time;
@@ -18,17 +18,18 @@ pub fn follow_all_script(
         (
             &mut Velocity,
             &Transform,
-            &GroundContact,
+            &mut GroundContact,
             &mut Player,
         ),
         With<AIPlayer>,
     >,
     sim: Res<SimulationPlayersInputs>,
+    sim_state: Res<SimulationState>,
     mut app_exit: EventWriter<AppExit>,
 ) -> bevy::prelude::Result<(), BevyError> {
     let should_exit: AtomicBool = AtomicBool::default();
     player_query.iter_mut().for_each(
-        |(mut velocity, transform, ground_contact, mut player)| {
+        |(mut velocity, transform, mut ground_contact, mut player)| {
             if player.freeze {
                 return;
             }
@@ -36,9 +37,10 @@ pub fn follow_all_script(
             let should_stop = follow_script(
                 velocity.deref_mut(),
                 transform,
-                ground_contact,
+                ground_contact.deref_mut(),
                 player.deref_mut(),
                 &sim,
+                &sim_state
             );
             if should_stop {
                 should_exit.store(should_stop, Ordering::Relaxed);
@@ -57,11 +59,12 @@ pub fn follow_all_script(
 fn follow_script(
     velocity: &mut Velocity,
     transform: &Transform,
-    ground_contact: &GroundContact,
+    ground_contact: &mut GroundContact,
     ai_player: &mut Player,
-    sim: &Res<SimulationPlayersInputs>,
+    inputs: &Res<SimulationPlayersInputs>,
+    sim: &Res<SimulationState>
 ) -> bool {
-    let input_set = sim.inputs[ai_player.id];
+    let input_set = inputs.inputs[ai_player.id];
 
     let mut move_input = Vec3::ZERO;
 
@@ -102,10 +105,13 @@ fn follow_script(
 
     velocity.angvel.y = yaw * DELTA_TIME;
 
+    // print!("{:?} ", velocity.linvel.y);
+
     // Jump
     if input_set & Input::Jump != 0 {
         if ground_contact.0 != 0 {
             velocity.linvel.y += PLAYER_JUMP_SPEED;
+            ground_contact.0 = 0;
         } else {
             // error!("Received jump instruction while not on ground!")
         }

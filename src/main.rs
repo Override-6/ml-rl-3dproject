@@ -4,14 +4,13 @@ mod ui;
 // unused
 mod ai;
 mod component;
-mod drone;
 mod human;
 mod sensor;
 mod simulation;
 
 use crate::ai::input_recorder::GameInputRecorder;
 use crate::ai::model_control_pipeline::{
-    ModelCommands, poll_model_directive, setup_model_connection, sync_state_outputs,
+    poll_model_directive, setup_model_connection, sync_state_outputs,
 };
 use crate::ai::player::follow_all_script;
 use crate::ai::script::Script;
@@ -25,11 +24,9 @@ use crate::human::player::move_player;
 use crate::map::setup_map;
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
-use crate::simulation::{
-    DELTA_TIME, PlayerStep, SimulationConfig, SimulationState, TICK_RATE, clean_simulation,
-    print_simulation_players, simulation_tick, spawn_players,
-};
+use crate::simulation::{print_simulation_players, reset_simulation, simulation_tick, spawn_players, PlayerStep, SimulationConfig, SimulationState, DELTA_TIME, TICK_RATE};
 use crate::ui::{setup_ui, update_player_info, update_stats_text};
+use bevy::app::{RunMode, ScheduleRunnerPlugin};
 use bevy::audio::AudioPlugin;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::ecs::schedule::ScheduleLabel;
@@ -38,11 +35,12 @@ use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 use bevy_rapier3d::rapier::dynamics::IntegrationParameters;
 use bincode::encode_into_slice;
+use clap::{Parser, ValueEnum};
 use sensor::objective::check_trigger_zone;
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
-use clap::{Parser, ValueEnum};
+use std::time::Duration;
 
 const NB_AI_PLAYERS: usize = 200;
 const NB_AI_PLAYERS_NO_HEAD: usize = 1000;
@@ -62,14 +60,16 @@ enum HeadMode {
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[clap(short, long, default_value = "rt", value_name = "head")]
+    #[clap(long, default_value = "rt", value_name = "head")]
     head: HeadMode,
+    #[clap(short = 'p', long = "players", default_value = "200")]
+    player_count: usize,
 }
 
 fn main() {
     let args = Args::parse();
     let script = read_script_from_file("script.bin");
-    let app = create_app(args.head, script);
+    let app = create_app(args.head, args.player_count, script);
     run_simulation(app)
 }
 
@@ -89,14 +89,18 @@ fn read_script_from_file(file: &str) -> Option<Script> {
     script
 }
 
-fn create_app(head: HeadMode, script: Option<Script>) -> App {
+fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> App {
     let mut app = App::new();
 
     // if true, rush as fast as possible
     let rush = head != HeadMode::HeadRealTime;
 
     if head == HeadMode::None {
-        app.add_plugins(MinimalPlugins);
+        app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin {
+            run_mode: RunMode::Loop {
+                wait: None
+            }
+        }).add(TransformPlugin));
     } else {
         app.add_plugins(DefaultPlugins.build().disable::<AudioPlugin>())
             // .add_plugins(RapierDebugRenderPlugin::default())
@@ -110,15 +114,22 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
                 Update,
                 (
                     mouse_look,
-                    camera_follow.after(PhysicsSet::Writeback),
                     mouse_zoom,
                     update_stats_text,
                     update_player_info.after(sync_state_outputs),
                     debug_controls,
+                ),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    camera_follow.after(PhysicsSet::Writeback),
+                    update_stats_text,
+                    update_player_info.after(sync_state_outputs),
                     debug_render_lasers
                         .after(update_all_vibrissae_lasers)
                         .after(PhysicsSet::Writeback),
-                ),
+                    )
             );
     }
 
@@ -150,7 +161,6 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
             },
         )
         .insert_resource(DirectionalLightShadowMap { size: 100 });
-
     if rush {
         app.insert_resource(TimestepMode::Fixed {
             dt: DELTA_TIME,
@@ -167,11 +177,11 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
     };
 
     macro_rules! add_game_logic_systems {
-        ($systems: expr) => {
+        ($rs: expr, $nrs: expr, $systems: expr) => {
             if rush {
-                app.add_systems(Update, $systems)
+                app.add_systems($rs, $systems)
             } else {
-                app.add_systems(FixedUpdate, $systems)
+                app.add_systems($nrs, $systems)
             }
         };
     }
@@ -179,13 +189,9 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
     if let Some(script) = script {
         app.insert_resource(SimulationConfig::Simulation {
             script,
-            num_ai_players: if head == HeadMode::None {
-                NB_AI_PLAYERS_NO_HEAD
-            } else {
-                NB_AI_PLAYERS
-            },
+            num_ai_players: player_count
         });
-        add_game_logic_systems!(follow_all_script.after(ground_sensor_events));
+        add_game_logic_systems!(Update, FixedUpdate, follow_all_script);
     } else {
         assert_eq!(
             head,
@@ -194,27 +200,29 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
         );
         app.insert_resource(GameInputRecorder::new());
         app.insert_resource(SimulationConfig::Game);
-        add_game_logic_systems!(move_player.after(ground_sensor_events));
+        add_game_logic_systems!(Update, FixedUpdate, move_player.after(poll_model_directive));
     }
 
-    add_game_logic_systems!((
+    add_game_logic_systems!(PreUpdate, FixedPreUpdate, (
         ground_sensor_events,
         check_trigger_zone,
-        update_all_vibrissae_lasers,
-        poll_model_directive.before(follow_all_script),
+        poll_model_directive,
+        simulation_tick
+    ));
+
+    add_game_logic_systems!(PostUpdate, FixedPostUpdate, (
+        update_all_vibrissae_lasers.after(PhysicsSet::Writeback),
         sync_state_outputs.after(PhysicsSet::Writeback),
-        simulation_tick.before(sync_state_outputs),
         (
             print_simulation_players,
-            clean_simulation,
-            spawn_players,
-            spawn_player_characters,
-            spawn_arrows_to_players
+            reset_simulation,
         )
             .chain()
             .run_if(|cmd: Res<SimulationState>| cmd.resetting)
-            .before(sync_state_outputs),
+            .before(PhysicsSet::SyncBackend),
     ));
+
+
 
     app
 }
