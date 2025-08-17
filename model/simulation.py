@@ -17,11 +17,11 @@ def recv_exact(conn, size):
 
 def read_player_states(conn):
     # Read player count (u32)
+    print("Reading player states...")
     raw_len = recv_exact(conn, 4)
     N = struct.unpack('<I', raw_len)[0]
 
     # Read PlayerStates
-    player_states = []
     player_state_size = 96  # sizeof(PlayerState);
 
     data = recv_exact(conn, N * player_state_size)

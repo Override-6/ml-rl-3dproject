@@ -16,7 +16,8 @@ def main():
             try:
                 train_loop(conn)
             except Exception as e:
-                raise
+                print(e)
+                # raise
 
 if __name__ == "__main__":
     main()

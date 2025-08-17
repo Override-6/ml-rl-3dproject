@@ -11,6 +11,9 @@ from tensorflow.keras import layers, Model
 
 from simulation import read_player_states, send_model_outputs, send_reset
 
+import os
+os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+
 # ------------------------
 # Hyperparameters
 # ------------------------
@@ -286,7 +289,6 @@ def ppo_update(rollout, nav_model, optimizer):
             mb_rot = tf.convert_to_tensor(rot_seq[mb_idxs], dtype=tf.float32)
             mb_laser_dist = tf.convert_to_tensor(laser_dist_seq[mb_idxs], dtype=tf.float32)
             mb_laser_type = tf.convert_to_tensor(laser_type_seq[mb_idxs], dtype=tf.int32)
-
             mb_actions = tf.convert_to_tensor(actions_seq[mb_idxs], dtype=tf.float32)  # (mb, T, NUM_ACTIONS)
             mb_old_logp = tf.convert_to_tensor(old_logp_seq[mb_idxs], dtype=tf.float32)  # (mb, T)
             mb_adv = tf.convert_to_tensor(adv_seq[mb_idxs], dtype=tf.float32)  # (mb, T)
@@ -497,8 +499,8 @@ def collect_rollout(conn, nav_model, rollout_length=SEQ_LEN):
 def train_loop(conn, num_updates=10000):
     for update in range(num_updates):
         rollout = collect_rollout(conn, nav_model, rollout_length=SEQ_LEN)
+        send_reset(conn) # reset environment during ppo_update
         # train on rollout
         ppo_update(rollout, nav_model, optimizer)
         # logging / saving model checkpoints etc.
         print(f"Finished update {update}")
-        send_reset(conn)

@@ -10,20 +10,17 @@ mod sensor;
 mod simulation;
 
 use crate::ai::input_recorder::GameInputRecorder;
-use crate::ai::model_control_pipeline::{
-    setup_model_connection, sync_model_outputs, sync_state_outputs,
-};
+use crate::ai::model_control_pipeline::{setup_model_connection, poll_model_directive, sync_state_outputs, ModelCommands};
 use crate::ai::player::follow_all_script;
 use crate::ai::script::Script;
 use crate::component::arrow::{spawn_arrow_resource, spawn_arrows_to_players};
-use crate::component::player_character::spawn_player_character;
 use crate::human::camera_controller::{camera_follow, mouse_look, spawn_camera_controller};
 use crate::human::player::move_player;
 use crate::map::setup_map;
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
-use crate::simulation::{DELTA_TIME, PlayerStep, SimulationConfig, TICK_RATE, spawn_players};
-use crate::ui::{setup_ui, update_stats_text};
+use crate::simulation::{remove_all_players, spawn_players, PlayerStep, SimulationConfig, DELTA_TIME, TICK_RATE};
+use crate::ui::{setup_ui, update_player_info, update_stats_text};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::pbr::DirectionalLightShadowMap;
@@ -35,6 +32,8 @@ use sensor::objective::check_trigger_zone;
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
+use bevy::audio::AudioPlugin;
+use crate::component::player_character::spawn_player_characters;
 
 const NB_AI_PLAYERS: usize = 150;
 
@@ -50,7 +49,7 @@ enum HeadMode {
 
 fn main() {
     let script = read_script_from_file("script.bin");
-    let app = create_app(HeadMode::HeadRush, script);
+    let app = create_app(HeadMode::HeadRealTime, script);
     run_simulation(app)
 }
 
@@ -79,7 +78,7 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
     if head == HeadMode::None {
         app.add_plugins(MinimalPlugins);
     } else {
-        app.add_plugins(DefaultPlugins)
+        app.add_plugins(DefaultPlugins.build().disable::<AudioPlugin>())
             .add_plugins(RapierDebugRenderPlugin::default())
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(
@@ -87,23 +86,22 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
                 (setup_ui, spawn_arrow_resource, spawn_camera_controller),
             )
             .add_systems(
+                PostStartup,
+                spawn_arrows_to_players.after(spawn_players),
+            )
+            .add_systems(
                 Update,
                 (
                     mouse_look,
                     camera_follow.after(PhysicsSet::Writeback),
                     update_stats_text,
+                    update_player_info.after(sync_state_outputs),
+                    debug_render_lasers
+                        .after(update_all_vibrissae_lasers)
+                        .after(PhysicsSet::Writeback),
                 ),
-            )
-            .add_systems(
-                Update,
-                debug_render_lasers
-                    .after(update_all_vibrissae_lasers)
-                    .after(PhysicsSet::Writeback),
-            )
-            .add_systems(
-                PostStartup,
-                spawn_arrows_to_players.after(spawn_player_character),
             );
+
     }
 
     app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
@@ -111,10 +109,8 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
             Startup,
             (
                 setup_map,
-                spawn_players,
-                spawn_player_character.after(spawn_players),
-                setup_model_connection.after(spawn_player_character),
-                sync_state_outputs.after(setup_model_connection),
+                setup_model_connection,
+                (spawn_players, spawn_player_characters, sync_state_outputs).chain().after(setup_model_connection)
             ),
         )
         .add_systems(Update, cleanup_on_exit)
@@ -177,8 +173,9 @@ fn create_app(head: HeadMode, script: Option<Script>) -> App {
         ground_sensor_events,
         check_trigger_zone,
         update_all_vibrissae_lasers,
-        sync_model_outputs.before(follow_all_script),
-        sync_state_outputs.after(PhysicsSet::StepSimulation),
+        poll_model_directive.before(follow_all_script),
+        sync_state_outputs.after(PhysicsSet::Writeback),
+        (remove_all_players, spawn_players, spawn_player_characters, spawn_arrows_to_players).chain().run_if(|cmd: Res<ModelCommands>| cmd.current_step_is_reset).before(sync_state_outputs),
     ));
 
     app

@@ -3,11 +3,12 @@ use crate::map::ComponentType;
 use crate::player::Player;
 use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
-use crate::simulation::{evaluate_player, reset_simulation, LaserHit, PlayerEvaluation, PlayerState, PlayerStep, SimulationStepState};
+use crate::simulation::{
+    LaserHit, PlayerEvaluation, PlayerState, PlayerStep, SimulationStepState, evaluate_player,
+};
 use bevy::prelude::{Commands, Query, Res, ResMut, Resource, Transform, With};
-use bevy::render::render_resource::encase::private::RuntimeSizedArray;
 use bevy_math::u32;
-use bevy_rapier3d::prelude::Velocity;
+use bevy_rapier3d::prelude::{Sleeping, Velocity};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread::sleep;
@@ -16,6 +17,7 @@ use std::time::Duration;
 #[derive(Resource)]
 pub struct ModelCommands {
     stream: TcpStream,
+    pub current_step_is_reset: bool,
 }
 
 #[derive(Resource)]
@@ -23,7 +25,7 @@ pub struct SimulationPlayersInputs {
     pub inputs: Vec<InputSet>,
 }
 
-enum ModelDirective {
+pub enum ModelDirective {
     ResetSimulation,
     NexStep(Vec<InputSet>),
 }
@@ -46,7 +48,7 @@ impl ModelCommands {
         Ok(())
     }
 
-    pub fn poll_model_outputs(&mut self) -> std::io::Result<Vec<InputSet>> {
+    fn poll_model_outputs(&mut self) -> std::io::Result<Vec<InputSet>> {
         let mut head_buff = [0u8; size_of::<u32>()];
         self.stream.read_exact(&mut head_buff)?;
         let item_count = u32::from_le_bytes(head_buff) as usize;
@@ -72,7 +74,10 @@ impl ModelCommands {
 
 pub fn setup_model_connection(mut commands: Commands) {
     let stream = TcpStream::connect("localhost:9999").unwrap();
-    commands.insert_resource(ModelCommands { stream });
+    commands.insert_resource(ModelCommands {
+        stream,
+        current_step_is_reset: false,
+    });
     sleep(Duration::from_secs(1));
 }
 
@@ -80,21 +85,43 @@ pub fn sync_state_outputs(
     last_state: Option<Res<SimulationStepState>>,
     mut commands: Commands,
     mut model_commands: ResMut<ModelCommands>,
+    players: Query<
+        (
+            &PlayerVibrissae,
+            &mut Velocity,
+            &Transform,
+            &IsInObjective,
+            &mut Player,
+            &mut Sleeping,
+        ),
+        With<Player>,
+    >,
+) {
+    print!("Sending state...");
+    let state = evaluate_players(last_state, players, model_commands.current_step_is_reset);
+    commands.insert_resource(state.clone());
+    model_commands.send_step_outputs(state).unwrap();
+    println!("\rSent state.")
+}
+
+fn evaluate_players(
+    last_state: Option<Res<SimulationStepState>>,
     mut players: Query<
         (
             &PlayerVibrissae,
             &mut Velocity,
             &Transform,
             &IsInObjective,
-            &mut Player
+            &mut Player,
+            &mut Sleeping,
         ),
         With<Player>,
     >,
-) {
-    print!("Sending state...");
-    let player_states = players
+    just_reset: bool,
+) -> SimulationStepState {
+    let player_states: Vec<_> = players
         .iter_mut()
-        .map(|(vibrissae, velocity, transform, itz, player)| {
+        .map(|(vibrissae, velocity, transform, itz, player, sleeping)| {
             (
                 PlayerState {
                     position: transform.translation,
@@ -116,37 +143,33 @@ pub fn sync_state_outputs(
                 },
                 itz,
                 player,
-                velocity
+                velocity,
+                sleeping,
             )
         })
-        .enumerate()
-        .map(|(player_idx, (state, itz, mut player, mut velocity))| {
+        .map(|(state, itz, mut player, mut velocity, mut sleeping)| {
             let evaluation = last_state
                 .as_ref()
+                .filter(|_| !just_reset)
                 .map_or(PlayerEvaluation::default(), |ls| {
-                    evaluate_player(&ls.player_states[player_idx].state, &state, itz.0)
+                    evaluate_player(&ls.player_states[player.id].state, &state, itz.0)
                 });
-            if evaluation.done {
-                println!("Froze player {player_idx} as it reached a terminal state.");
+            if evaluation.done && !player.freeze {
+                println!("Froze player {} as it reached a terminal state.", player.id);
                 player.freeze = true;
+                sleeping.sleeping = true;
                 *velocity = Velocity::default();
             }
-            print!("{} ", evaluation.reward);
             PlayerStep { evaluation, state }
         })
         .collect();
-    println!();
 
-    let state = SimulationStepState { player_states };
-    commands.insert_resource(state.clone());
-    model_commands.send_step_outputs(state).unwrap();
-    println!("\rSent state.")
+    SimulationStepState { player_states }
 }
 
-pub fn sync_model_outputs(
+pub fn poll_model_directive(
     mut model_commands: ResMut<ModelCommands>,
     mut commands: Commands,
-    players_query: Query<(&mut Transform, &mut Velocity, &mut Player), With<Player>>,
 ) {
     print!("Waiting for next model directive...");
     let directive = model_commands.pull_model_directive().unwrap();
@@ -154,7 +177,7 @@ pub fn sync_model_outputs(
     match directive {
         ModelDirective::ResetSimulation => {
             println!("\rReceived reset packet, resetting simulation...");
-            reset_simulation(players_query);
+            model_commands.current_step_is_reset = true;
         }
         ModelDirective::NexStep(inputs) => {
             println!("\rReceived model outputs, advancing simulation...");

@@ -1,13 +1,15 @@
+use crate::component::player_character::PlayerInfoUI;
 use crate::player::Player;
-use bevy::color::palettes::css::GREEN;
+use crate::simulation::{PlayerEvaluation, SimulationStepState};
+use bevy::color::palettes::basic::RED;
+use bevy::color::palettes::css::{BLUE, GREEN};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::prelude::{
-    AlignSelf, Commands, Component, PositionType, Query, Res, Text, Transform, Visibility, With,
-};
+use bevy::prelude::{AlignSelf, Camera, Camera3d, ChildOf, Commands, Component, GlobalTransform, PositionType, Query, Res, Text, Transform, Vec3, Visibility, Window, With};
 use bevy::text::{JustifyText, TextColor, TextFont, TextLayout};
 use bevy::ui::{Node, Val};
 use bevy_math::EulerRot;
 use bevy_rapier3d::prelude::Velocity;
+use crate::ai::model_control_pipeline::ModelCommands;
 
 // New component to mark our UI text
 #[derive(Component)]
@@ -85,4 +87,58 @@ pub fn update_stats_text(
         ang_vel.y,
         ang_vel.z
     );
+}
+
+pub fn update_player_info(
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    gt_q: Query<(&Player, &GlobalTransform)>,
+    mut player_info_q: Query<
+        (&mut Node, &mut Text, &mut TextColor, &PlayerInfoUI),
+    >,
+    sim_step: Res<SimulationStepState>,
+    model_commands: Res<ModelCommands>,
+) -> Result<(), bevy::prelude::BevyError> {
+    if model_commands.current_step_is_reset {
+        return Ok(()); // do not update player info during environment reset
+    }
+    let window = windows.single()?;
+    let (camera, camera_transform) = camera_q.single()?;
+
+    for (mut node, mut text, mut text_color, pui) in
+        player_info_q.iter_mut()
+    {
+        let (player, player_transform) = gt_q.get(pui.0)?;
+        // World position above the player
+        let world_pos = player_transform.translation() + Vec3::Y * 1.5;
+
+        // Convert to NDC (Normalized Device Coordinates)
+        if let Some(ndc) = camera.world_to_ndc(camera_transform, world_pos) {
+            if ndc.z > 0.0 {
+                // Convert NDC to screen coords
+                let screen_x = (ndc.x + 1.0) / 2.0 * window.width();
+                let screen_y = (1.0 - ndc.y) / 2.0 * window.height();
+
+                node.left = Val::Px(screen_x);
+                node.top = Val::Px(screen_y);
+            }
+        }
+
+        let PlayerEvaluation { reward, done } = sim_step.player_states[player.id].evaluation;
+
+        if done {
+            text_color.0 = BLUE.into();
+            text.0 = String::from("DONE");
+            continue
+        }
+
+        text.0 = format!("{reward}");
+        if reward >= 0.0 {
+            text_color.0 = GREEN.into();
+        } else {
+            text_color.0 = RED.into();
+        }
+    }
+
+    Ok(())
 }

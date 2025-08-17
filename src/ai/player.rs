@@ -2,31 +2,16 @@ use crate::ai::input::Input;
 use crate::ai::model_control_pipeline::SimulationPlayersInputs;
 use crate::player::{PLAYER_SPEED, PLAYER_TURN_SPEED, Player};
 use crate::sensor::ground_sensor::GroundContact;
-use crate::simulation::{DELTA_TIME, SimulationConfig, SimulationStepState};
+use crate::simulation::DELTA_TIME;
 use bevy::app::AppExit;
-use bevy::log::error;
 use bevy::prelude::{BevyError, Component, EventWriter, Query, Res, Transform, Vec3, With};
 use bevy::time::Time;
 use bevy_rapier3d::prelude::Velocity;
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub struct AIPlayerId(pub usize);
-
 #[derive(Component)]
-pub struct AIPlayer {
-    // script_progress: usize,
-    pub id: AIPlayerId,
-}
-
-impl AIPlayer {
-    pub fn new(id: AIPlayerId) -> Self {
-        Self {
-            id,
-            // script_progress: 0,
-        }
-    }
-}
+pub struct AIPlayer;
 
 pub fn follow_all_script(
     mut player_query: Query<
@@ -34,19 +19,16 @@ pub fn follow_all_script(
             &mut Velocity,
             &Transform,
             &GroundContact,
-            &Player,
-            &mut AIPlayer,
+            &mut Player,
         ),
         With<AIPlayer>,
     >,
     sim: Res<SimulationPlayersInputs>,
     mut app_exit: EventWriter<AppExit>,
-    time: Res<Time>,
 ) -> bevy::prelude::Result<(), BevyError> {
-    println!("GL_delta: {}", time.delta_secs());
     let should_exit: AtomicBool = AtomicBool::default();
-    player_query.par_iter_mut().for_each(
-        |(mut velocity, transform, ground_contact, player, mut ai_player)| {
+    player_query.iter_mut().for_each(
+        |(mut velocity, transform, ground_contact, mut player)| {
             if player.freeze {
                 return;
             }
@@ -55,7 +37,7 @@ pub fn follow_all_script(
                 velocity.deref_mut(),
                 transform,
                 ground_contact,
-                ai_player.deref_mut(),
+                player.deref_mut(),
                 &sim,
             );
             if should_stop {
@@ -76,10 +58,10 @@ fn follow_script(
     velocity: &mut Velocity,
     transform: &Transform,
     ground_contact: &GroundContact,
-    ai_player: &mut AIPlayer,
+    ai_player: &mut Player,
     sim: &Res<SimulationPlayersInputs>,
 ) -> bool {
-    let input_set = sim.inputs[ai_player.id.0];
+    let input_set = sim.inputs[ai_player.id];
 
     let mut move_input = Vec3::ZERO;
 

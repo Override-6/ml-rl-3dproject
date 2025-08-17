@@ -1,13 +1,14 @@
-use crate::ai::player::{AIPlayer, AIPlayerId};
+use crate::ai::model_control_pipeline::ModelCommands;
+use crate::ai::player::AIPlayer;
 use crate::ai::script::Script;
 use crate::human::player::HumanPlayer;
 use crate::map::{ComponentType, OBJECTIVE_POS};
 use crate::player::{Player, PLAYER_LASER_COUNT};
-use bevy::prelude::{Commands, Query, Res, Resource, Transform, With};
+use bevy::prelude::{Commands, Entity, Query, Res, ResMut, Resource, With};
+use bevy::tasks::futures_lite::StreamExt;
 use bevy_math::Vec3;
-use bevy_rapier3d::prelude::Velocity;
-use rand::Rng;
 use std::ops::Deref;
+use crate::component::player_character::PlayerInfoUI;
 
 pub const TICK_RATE: f32 = 5.0;
 pub const DELTA_TIME: f32 = 1.0 / TICK_RATE;
@@ -69,11 +70,11 @@ pub fn spawn_players(mut commands: Commands, simulation: Res<SimulationConfig>) 
             commands.spawn_batch(
                 (0..*num_ai_players)
                     .into_iter()
-                    .map(|id| (Player::default(), AIPlayer::new(AIPlayerId(id)))),
+                    .map(|id| (Player::new(id), AIPlayer)),
             );
         }
         SimulationConfig::Game => {
-            commands.spawn((Player::default(), HumanPlayer));
+            commands.spawn((Player::new(0), HumanPlayer));
         }
     }
 }
@@ -112,13 +113,14 @@ pub fn evaluate_player(
     PlayerEvaluation { reward, done }
 }
 
-pub fn reset_simulation(
-    mut players: Query<(&mut Transform, &mut Velocity, &mut Player), With<Player>>
+pub fn remove_all_players(
+    mut model_commands: ResMut<ModelCommands>,
+    mut commands: Commands,
+    players: Query<Entity, With<Player>>,
+    players_info: Query<Entity, With<PlayerInfoUI>>
 ) {
-    let mut rng = rand::rng();
-    for (mut transform, mut velocity, mut player) in players.iter_mut() {
-        *transform = Transform::from_xyz(rng.random_range(-30.0..30.0), 0.0, rng.random_range(-30.0..30.0));
-        *velocity = Velocity::default();
-        player.freeze = false; // unfreeze all players
-    }
+    model_commands.current_step_is_reset = false;
+    players.iter().chain(players_info.iter()).for_each(|e| {
+        commands.entity(e).despawn();
+    });
 }

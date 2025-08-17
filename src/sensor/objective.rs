@@ -31,9 +31,8 @@ pub fn check_trigger_zone(
                     continue
                 }
                 let player = if *e1 == trigger { *e2 } else { *e1 };
-                println!("Entity {player} inside trigger zone");
 
-                if let Some(mut in_zone) = itz.get_mut(player).ok() {
+                if let Ok(mut in_zone) = itz.get_mut(player) {
                     in_zone.0 = true;
                 }
 
@@ -48,9 +47,8 @@ pub fn check_trigger_zone(
                     continue
                 }
                 let player = if *e1 == trigger { *e2 } else { *e1 };
-                println!("Player {player} inside trigger zone");
 
-                if let Some(mut in_zone) = itz.get_mut(player).ok() {
+                if let Ok(mut in_zone) = itz.get_mut(player) {
                     in_zone.0 = false;
                 }
 
