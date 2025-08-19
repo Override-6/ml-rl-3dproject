@@ -10,12 +10,15 @@ use bevy_rapier3d::prelude::{Sleeping, Velocity};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ops::Deref;
+use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
+use crossbeam_channel::{unbounded, Sender, TrySendError};
 
 #[derive(Resource)]
 pub struct ModelCommands {
     stream: TcpStream,
+    output_writer: OutputWriter
 }
 
 #[derive(Resource)]
@@ -28,38 +31,64 @@ pub enum ModelDirective {
     NexStep(Vec<InputSet>),
 }
 
+pub struct OutputWriter {
+    tx: Sender<Vec<u8>>,
+}
+
+impl OutputWriter {
+    pub fn start(stream: TcpStream) -> Self {
+        let (tx, rx) = unbounded::<Vec<u8>>();
+        thread::spawn(move || {
+            let mut stream = stream;
+            for msg in rx.iter() {
+                if let Err(e) = stream.write_all(&msg) {
+                    log::error!("writer thread: write_all failed: {}", e);
+                    // Optionally: attempt reconnect, break, or continue depending on policy
+                    break;
+                }
+            }
+            log::info!("writer thread exiting");
+        });
+        Self { tx }
+    }
+
+    pub fn enqueue(&self, buf: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
+        self.tx.try_send(buf)
+    }
+}
+
 impl ModelCommands {
     pub fn send_step_outputs(
         &mut self,
         state: SimulationStepState,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let t0 = std::time::Instant::now();
         let players_states = state.player_states.as_slice();
-        let count_bytes = &u32::to_le_bytes(players_states.len() as u32);
-        self.stream.write_all(count_bytes)?;
-        let byte_slice: &[u8] = unsafe {
+        let mut buf = Vec::with_capacity(4 + players_states.len() * std::mem::size_of::<PlayerStep>());
+        buf.extend_from_slice(&(players_states.len() as u32).to_le_bytes());
+        let bytes = unsafe {
             std::slice::from_raw_parts(
                 players_states.as_ptr() as *const u8,
-                players_states.len() * size_of::<PlayerStep>(),
+                size_of_val(players_states),
             )
         };
-        self.stream.write_all(byte_slice)?;
-        let t1 = std::time::Instant::now();
-        // println!("Sent step outputs in {}ms", t1.duration_since(t0).as_millis());
-        Ok(())
+        buf.extend_from_slice(bytes);
+
+        match self.output_writer.enqueue(buf) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                log::warn!("output enqueue failed: {}", e);
+                Ok(())
+            }
+        }
     }
 
     fn poll_model_outputs(&mut self) -> std::io::Result<Vec<InputSet>> {
-        let t0 = std::time::Instant::now();
         let mut head_buff = [0u8; size_of::<u32>()];
         self.stream.read_exact(&mut head_buff)?;
         let item_count = u32::from_le_bytes(head_buff) as usize;
 
         let mut inputs = vec![0u8 as InputSet; item_count];
         self.stream.read_exact(&mut inputs)?;
-
-        let t1 = std::time::Instant::now();
-        // println!("Received model outputs in {}ms", t1.duration_since(t0).as_millis());
 
         Ok(inputs)
     }
@@ -69,18 +98,21 @@ impl ModelCommands {
         self.stream.read_exact(&mut packet_type_buff)?;
         let packet_type = u32::from_le_bytes(packet_type_buff);
 
-        match packet_type {
+        let result = match packet_type {
             0 => Ok(ModelDirective::ResetSimulation),
             1 => self.poll_model_outputs().map(ModelDirective::NexStep),
             _ => panic!("Received unexpected packet type {packet_type}"),
-        }
+        };
+        result
     }
 }
 
 pub fn setup_model_connection(mut commands: Commands) {
-    let stream = TcpStream::connect("localhost:9999").unwrap();
+    let mut stream = TcpStream::connect("localhost:9999").unwrap();
+    stream.set_nodelay(true).unwrap();
     commands.insert_resource(ModelCommands {
-        stream,
+        stream: stream.try_clone().unwrap(),
+        output_writer: OutputWriter::start(stream),
     });
     sleep(Duration::from_secs(1));
 }
@@ -184,6 +216,7 @@ pub fn poll_model_directive(
     mut sim: ResMut<SimulationState>,
     mut commands: Commands,
 ) {
+    let t0 = std::time::Instant::now();
     // println!("Waiting for next model directive...");
     let directive = model_commands.pull_model_directive().unwrap();
 
@@ -194,6 +227,7 @@ pub fn poll_model_directive(
         }
         ModelDirective::NexStep(inputs) => {
             // println!("\rReceived model outputs, advancing simulation...");
+
             commands.insert_resource(SimulationPlayersInputs { inputs });
         }
     }

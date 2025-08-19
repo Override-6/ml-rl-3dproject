@@ -3,7 +3,7 @@ import socket
 import threading
 from threading import Thread
 
-import agent
+from src import agent
 from simulation import send_reset
 
 rollout_queue = queue.Queue()
@@ -39,6 +39,7 @@ def main():
     # Create server socket
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     server_sock.bind((HOST, PORT))
     server_sock.listen()
     print(f"Threaded server listening on {HOST}:{PORT}")

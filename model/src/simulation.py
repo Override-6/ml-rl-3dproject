@@ -66,7 +66,6 @@ def read_player_states(conn):
     # print("Received Player States")
     return state
 
-
 def send_model_outputs(conn, outputs):
     conn.sendall(struct.pack('<I', 1)) # packet type: send_model_output
     conn.sendall(struct.pack('<I', len(outputs)))  # send count

@@ -24,7 +24,10 @@ use crate::human::player::move_player;
 use crate::map::setup_map;
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
-use crate::simulation::{print_simulation_players, reset_simulation, simulation_tick, spawn_players, PlayerStep, SimulationConfig, SimulationState, DELTA_TIME, TICK_RATE};
+use crate::simulation::{
+    DELTA_TIME, PlayerStep, SimulationConfig, SimulationState, TICK_RATE, print_simulation_players,
+    reset_simulation, simulation_tick, spawn_players,
+};
 use crate::ui::{setup_ui, update_player_info, update_stats_text};
 use bevy::app::{RunMode, ScheduleRunnerPlugin};
 use bevy::audio::AudioPlugin;
@@ -40,7 +43,8 @@ use sensor::objective::check_trigger_zone;
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use log::info;
 
 const NB_AI_PLAYERS: usize = 200;
 const NB_AI_PLAYERS_NO_HEAD: usize = 1000;
@@ -96,11 +100,13 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
     let rush = head != HeadMode::HeadRealTime;
 
     if head == HeadMode::None {
-        app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin {
-            run_mode: RunMode::Loop {
-                wait: None
-            }
-        }).add(TransformPlugin));
+        app.add_plugins(
+            MinimalPlugins
+                .set(ScheduleRunnerPlugin {
+                    run_mode: RunMode::Loop { wait: None },
+                })
+                .add(TransformPlugin),
+        );
     } else {
         app.add_plugins(DefaultPlugins.build().disable::<AudioPlugin>())
             // .add_plugins(RapierDebugRenderPlugin::default())
@@ -129,7 +135,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
                     debug_render_lasers
                         .after(update_all_vibrissae_lasers)
                         .after(PhysicsSet::Writeback),
-                    )
+                ),
             );
     }
 
@@ -189,7 +195,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
     if let Some(script) = script {
         app.insert_resource(SimulationConfig::Simulation {
             script,
-            num_ai_players: player_count
+            num_ai_players: player_count,
         });
         add_game_logic_systems!(Update, FixedUpdate, follow_all_script);
     } else {
@@ -203,26 +209,29 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
         add_game_logic_systems!(Update, FixedUpdate, move_player.after(poll_model_directive));
     }
 
-    add_game_logic_systems!(PreUpdate, FixedPreUpdate, (
-        ground_sensor_events,
-        check_trigger_zone,
-        poll_model_directive,
-        simulation_tick
-    ));
-
-    add_game_logic_systems!(PostUpdate, FixedPostUpdate, (
-        update_all_vibrissae_lasers.after(PhysicsSet::Writeback),
-        sync_state_outputs.after(PhysicsSet::Writeback),
+    add_game_logic_systems!(
+        PreUpdate,
+        FixedPreUpdate,
         (
-            print_simulation_players,
-            reset_simulation,
+            ground_sensor_events,
+            check_trigger_zone,
+            poll_model_directive,
+            simulation_tick
         )
-            .chain()
-            .run_if(|cmd: Res<SimulationState>| cmd.resetting)
-            .before(PhysicsSet::SyncBackend),
-    ));
+    );
 
-
+    add_game_logic_systems!(
+        PostUpdate,
+        FixedPostUpdate,
+        (
+            update_all_vibrissae_lasers.after(PhysicsSet::Writeback),
+            sync_state_outputs.after(PhysicsSet::Writeback),
+            (print_simulation_players, reset_simulation,)
+                .chain()
+                .run_if(|cmd: Res<SimulationState>| cmd.resetting)
+                .before(PhysicsSet::SyncBackend),
+        )
+    );
 
     app
 }
