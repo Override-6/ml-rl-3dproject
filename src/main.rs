@@ -21,7 +21,7 @@ use crate::human::camera_controller::{
 };
 use crate::human::debug_controls::debug_controls;
 use crate::human::player::move_player;
-use crate::map::setup_map;
+use crate::map::{reset_map, setup_map};
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
 use crate::simulation::{
@@ -44,7 +44,10 @@ use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
+use bevy::window::PresentMode;
+use bevy::winit::{UpdateMode, WinitSettings};
 use log::info;
+use crate::player::reset_players;
 
 const NB_AI_PLAYERS: usize = 200;
 const NB_AI_PLAYERS_NO_HEAD: usize = 1000;
@@ -108,14 +111,30 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
                 .add(TransformPlugin),
         );
     } else {
-        app.add_plugins(DefaultPlugins.build().disable::<AudioPlugin>())
+        app.add_plugins(DefaultPlugins
+            .build()
+            .disable::<AudioPlugin>()
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    present_mode: PresentMode::Immediate, 
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        )
+            .insert_resource(WinitSettings {
+                focused_mode: UpdateMode::Continuous,    // keep running full speed when focused
+                unfocused_mode: UpdateMode::Continuous,  // keep running full speed when not focused
+
+                ..default()
+            })
             // .add_plugins(RapierDebugRenderPlugin::default())
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(
                 Startup,
                 (setup_ui, spawn_arrow_resource, spawn_camera_controller),
             )
-            .add_systems(PostStartup, spawn_arrows_to_players.after(spawn_players))
+            .add_systems(PostStartup, (spawn_arrows_to_players.after(spawn_players), reset_players))
             .add_systems(
                 Update,
                 (
@@ -143,7 +162,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
         .add_systems(
             Startup,
             (
-                setup_map,
+                (setup_map, reset_map).chain(),
                 (
                     setup_model_connection,
                     spawn_players,
@@ -226,7 +245,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
         (
             update_all_vibrissae_lasers.after(PhysicsSet::Writeback),
             sync_state_outputs.after(PhysicsSet::Writeback),
-            (print_simulation_players, reset_simulation,)
+            (print_simulation_players, reset_simulation, reset_players, reset_map)
                 .chain()
                 .run_if(|cmd: Res<SimulationState>| cmd.resetting)
                 .before(PhysicsSet::SyncBackend),

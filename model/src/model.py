@@ -1,12 +1,11 @@
 import os
 import warnings
 
-import numpy as np
-
-from data import PlayerState, Input
-from src.hyperparameters import FEATURE_DIM, LSTM_UNITS, LASERS_PER_PLAYER, NB_COMPONENT_TYPES, NUM_ACTIONS
 import tensorflow as tf
 from tensorflow.keras import layers
+
+from src.hyperparameters import FEATURE_DIM, LSTM_UNITS, LASERS_PER_PLAYER, NB_COMPONENT_TYPES, NUM_ACTIONS
+
 
 # ------------------------
 # Build model class
@@ -18,7 +17,6 @@ class NavigationModel(tf.keras.Model):
         # feature extractor: per-timestep inputs -> feature vector
         # We'll implement it as layers we can call manually
         # Note: not using functional Model() because we need flexibility with initial states
-        self.pos_layer = layers.InputLayer(input_shape=(3,))
         self.angvel_layer = layers.InputLayer(input_shape=(3,))
         self.linvel_layer = layers.InputLayer(input_shape=(3,))
         self.rot_layer = layers.InputLayer(input_shape=(3,))
@@ -47,6 +45,7 @@ class NavigationModel(tf.keras.Model):
         self._dummy_build()
 
         if file and os.path.exists(file):
+            print(f"Loading weights from {file}")
             self.load_weights(file)
         else:
             warnings.warn(f"File {file} not found, using random weights...")
@@ -66,7 +65,6 @@ class NavigationModel(tf.keras.Model):
 
     def _dummy_build(self):
         batch_size = 1
-        dummy_pos = tf.zeros((batch_size, 3), dtype=tf.float32)
         dummy_angvel = tf.zeros((batch_size, 3), dtype=tf.float32)
         dummy_linvel = tf.zeros((batch_size, 3), dtype=tf.float32)
         dummy_rot = tf.zeros((batch_size, 3), dtype=tf.float32)
@@ -77,7 +75,7 @@ class NavigationModel(tf.keras.Model):
 
         # call step once to build all layers/variables
         _ = self.step(
-            dummy_pos, dummy_angvel, dummy_linvel, dummy_rot,
+            dummy_angvel, dummy_linvel, dummy_rot,
             dummy_laser_dist, dummy_laser_type, dummy_h, dummy_c
         )
         self.build((batch_size, 1, 1))
@@ -87,10 +85,9 @@ class NavigationModel(tf.keras.Model):
         new_model.copy_from(self)
         return new_model
 
-    def extract_features(self, pos, angvel, linvel, rot, laser_dist, laser_type):
+    def extract_features(self, angvel, linvel, rot, laser_dist, laser_type):
         """Extract single-timestep features. Inputs are tensors with shape (batch, ...)"""
         # apply input layers so shapes are checked
-        # _ = self.pos_layer(pos)
         # _ = self.angvel_layer(angvel)
         # _ = self.linvel_layer(linvel)
         # _ = self.rot_layer(rot)
@@ -103,13 +100,13 @@ class NavigationModel(tf.keras.Model):
         x = self.conv2(x)
         x = self.flatten(x)  # (batch, conv_features)
 
-        state_feat = tf.concat([pos, angvel, linvel, rot, x], axis=-1)
+        state_feat = tf.concat([angvel, linvel, rot, x], axis=-1)
         state_feat = self.dense1(state_feat)
         state_feat = self.dense2(state_feat)  # (batch, FEATURE_DIM)
         return state_feat
 
     @tf.function
-    def step(self, pos, angvel, linvel, rot, laser_dist, laser_type, h, c):
+    def step(self, angvel, linvel, rot, laser_dist, laser_type, h, c):
         """
         Single-step forward with initial LSTM state (h,c).
         Inputs shapes: each (batch, ...)
@@ -120,7 +117,7 @@ class NavigationModel(tf.keras.Model):
             h_next: (batch, LSTM_UNITS)
             c_next: (batch, LSTM_UNITS)
         """
-        feat = self.extract_features(pos, angvel, linvel, rot, laser_dist, laser_type)
+        feat = self.extract_features(angvel, linvel, rot, laser_dist, laser_type)
         feat_seq = tf.expand_dims(feat, axis=1)  # (batch, 1, FEATURE_DIM)
 
         # LSTM returns (batch, 1, units), h_next (batch,units), c_next (batch,units)
@@ -134,7 +131,7 @@ class NavigationModel(tf.keras.Model):
         return policy, value, h_next, c_next
 
     @tf.function
-    def forward_sequence(self, pos_seq, angvel_seq, linvel_seq, rot_seq, laser_dist_seq, laser_type_seq,
+    def forward_sequence(self, angvel_seq, linvel_seq, rot_seq, laser_dist_seq, laser_type_seq,
                          h0=None, c0=None):
         """
         Forward a whole sequence for training.
@@ -146,8 +143,8 @@ class NavigationModel(tf.keras.Model):
             h_last: (batch, LSTM_UNITS)
             c_last: (batch, LSTM_UNITS)
         """
-        batch = tf.shape(pos_seq)[0]
-        seq_len = tf.shape(pos_seq)[1]
+        batch = tf.shape(angvel_seq)[0]
+        seq_len = tf.shape(angvel_seq)[1]
 
         # TimeDistributed extraction: apply extract_features across time
         # We will reshape to merge batch and time, run extract_features, then reshape back
@@ -155,14 +152,13 @@ class NavigationModel(tf.keras.Model):
             s = tf.shape(x)
             return tf.reshape(x, (s[0] * s[1],) + tuple(x.shape.as_list()[2:]))
 
-        p = merge_bt(pos_seq)
         a = merge_bt(angvel_seq)
         l = merge_bt(linvel_seq)
         r = merge_bt(rot_seq)
         ld = merge_bt(laser_dist_seq)
         lt = merge_bt(laser_type_seq)
 
-        feat_bt = self.extract_features(p, a, l, r, ld, lt)  # (batch*seq_len, FEATURE_DIM)
+        feat_bt = self.extract_features(a, l, r, ld, lt)  # (batch*seq_len, FEATURE_DIM)
 
         # Restore (batch, seq_len, FEATURE_DIM)
         feat_seq = tf.reshape(feat_bt, (batch, seq_len, FEATURE_DIM))

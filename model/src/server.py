@@ -34,7 +34,7 @@ def main():
     PORT = 9999
 
     # Start agent loop
-    Thread(target=agent.agent_loop, args=[rollout_queue]).start()
+    Thread(target=agent.agent_loop, args=[rollout_queue], daemon=True).start()
 
     # Create server socket
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -46,7 +46,7 @@ def main():
 
     while True:
         client_sock, _ = server_sock.accept()
-        thread = threading.Thread(target=handle_client_thread, args=(client_sock, rollout_queue))
+        thread = threading.Thread(target=handle_client_thread, args=(client_sock, rollout_queue), daemon=True)
         thread.start()
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
 use crate::map::ComponentType;
-use crate::player::{PLAYER_LASER_COUNT, Player};
-use bevy::color::palettes::basic::{BLUE, RED};
+use crate::player::{Player, LASER_LENGTH, PLAYER_LASER_COUNT};
+use crate::simulation::SimulationState;
+use bevy::color::palettes::basic::{BLUE, GREEN};
+use bevy::color::palettes::css::{GRAY, ORANGE, YELLOW};
 use bevy::prelude::{BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, Res, With};
 use bevy_math::Vec3;
 use bevy_rapier3d::plugin::ReadRapierContext;
 use bevy_rapier3d::prelude::QueryFilter;
-use crate::simulation::SimulationState;
 
-pub const LASER_LENGTH: f32 = 3000.0;
 
 /// Collection of lasers sensors that allows the player to understand where are the elements of the scene, ant which distance, and which kind of element it is.
 #[derive(Component)]
@@ -131,12 +131,16 @@ pub fn update_vibrissae_lasers(
 
 pub fn debug_render_lasers(
     mut gizmos: Gizmos,
-    query: Query<(&PlayerVibrissae, &GlobalTransform), With<Player>>,
+    query: Query<(&PlayerVibrissae, &GlobalTransform, &Player)>,
     sim: Res<SimulationState>
 ) {
-    for (vibrissae, player_gt) in query.iter()  {
+    for (vibrissae, player_gt, player) in query.iter()  {
         let origin = player_gt.translation();
         let direction = player_gt.rotation();
+
+        if player.freeze {
+            continue
+        }
 
         for laser in vibrissae.lasers.iter() {
             let Some(hit) = &laser.hit else {
@@ -148,13 +152,21 @@ pub fn debug_render_lasers(
                 continue;
             };
 
+            let hit_color = match hit.comp_type {
+                ComponentType::Ground => YELLOW,
+                ComponentType::Object => ORANGE,
+                ComponentType::Objective => GREEN,
+                ComponentType::Unknown => GRAY,
+                ComponentType::None => unreachable!(),
+            };
+
             gizmos.line(
                 origin,
                 origin + (direction * laser.direction) * LASER_LENGTH,
-                RED,
+                hit_color,
             );
 
-            gizmos.sphere(hit.point, 3.0, RED);
+            gizmos.sphere(hit.point, 3.0, hit_color);
         }
         if !sim.debug.print_all_lasers {
             // if we dont want to print all lasers, print only the lasers of the first player (which is the observed player)

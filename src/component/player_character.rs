@@ -27,11 +27,11 @@ pub struct PlayerInfoUI(pub(crate) Entity);
 pub fn spawn_player_characters(
     players: Query<Entity, With<Player>>,
     mut commands: Commands,
-    mut meshes: Option<ResMut<Assets<Mesh>>>,
-    mut materials: Option<ResMut<Assets<StandardMaterial>>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    materials: Option<ResMut<Assets<StandardMaterial>>>,
 ) {
     let mut rng = rand::rng();
-    let player_material = materials.map(|mut m| MeshMaterial3d(m.add(Color::srgb(0.7, 1.0, 0.5))));
+    let player_material = materials.map(|mut m| MeshMaterial3d(m.add(Color::srgb(0.3, 0.0, 0.25))));
     let player_mesh = meshes.map(|mut m| Mesh3d(m.add(Cuboid::new(
         PLAYER_WIDTH,
         PLAYER_HEIGHT,

@@ -1,70 +1,77 @@
-use crate::ai::model_control_pipeline::ModelCommands;
+use crate::ai::evaluation::PlayerEvaluation;
 use crate::component::player_character::PlayerInfoUI;
 use crate::player::Player;
-use crate::simulation::{PlayerEvaluation, SimulationState, SimulationStepState};
+use crate::simulation::SimulationState;
 use bevy::color::palettes::basic::RED;
 use bevy::color::palettes::css::{GRAY, GREEN};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::prelude::{Camera, Camera3d, Commands, Component, Display, GlobalTransform, Query, Res, Text, Transform, Vec3, Window, With};
+use bevy::prelude::{
+    AlignItems, Camera, Camera3d, Commands, Component, Display, GlobalTransform, JustifyContent,
+    PositionType, Query, Res, Text, Vec3, Window, With, Without,
+};
 use bevy::text::{TextColor, TextFont};
 use bevy::ui::{Node, Val};
-use bevy_math::EulerRot;
-use bevy_rapier3d::prelude::Velocity;
 
-// New component to mark our UI text
 #[derive(Component)]
 pub struct StatsText;
 
+#[derive(Component)]
+pub struct SimulationEpochText;
+
 pub fn setup_ui(mut commands: Commands) {
     commands.spawn((
-        Text::from("FPS: \nPosition: \nRotation: \nVelocity:"),
+        Text::from("FPS: {}"),
         TextFont {
             font_size: 20.0,
             ..Default::default()
         },
         StatsText,
     ));
+    commands
+        .spawn((Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::FlexStart,
+            ..Default::default()
+        },))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::from("Simulation {}"),
+                TextFont {
+                    font_size: 40.0,
+                    ..Default::default()
+                },
+                SimulationEpochText,
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(20.0),
+                    ..Default::default()
+                },
+            ));
+        });
 }
 
 pub fn update_stats_text(
-    player_query: Query<(&Transform, &Velocity), With<Player>>,
-    mut text_query: Query<&mut Text, With<StatsText>>,
+    mut transform_ui_query: Query<&mut Text, (With<StatsText>, Without<SimulationEpochText>)>,
+    mut epoch_ui_query: Query<&mut Text, (With<SimulationEpochText>, Without<StatsText>)>,
     diagnostic: Res<DiagnosticsStore>,
+    sim: Res<SimulationState>,
 ) {
-    let Some((transform, velocity)) = player_query.iter().next() else {
-        return;
-    };
-    let Ok(mut text) = text_query.single_mut() else {
+    let Ok(mut stats_text) = transform_ui_query.single_mut() else {
         return;
     };
 
-    let position = transform.translation;
-    let rotation = transform.rotation.to_euler(EulerRot::XYZ);
-    let lin_vel = velocity.linvel;
-    let ang_vel = velocity.angvel;
+    let Ok(mut epoch_text) = epoch_ui_query.single_mut() else {
+        return;
+    };
+
+    epoch_text.0 = format!("Simulation {}", sim.epoch);
 
     let fps = diagnostic.get(&FrameTimeDiagnosticsPlugin::FPS);
 
-    text.0 = format!(
-        "FPS:{}\n\
-        Position: {:>5.1}, {:>5.1}, {:>5.1}\n\
-        Rotation: {:>5.1}, {:>5.1}, {:>5.1}\n\
-        Velocity: {:>5.1}, {:>5.1}, {:>5.1}\n\
-        Angular: {:>5.1}, {:>5.1}, {:>5.1}",
-        fps.and_then(|fps| fps.average()).unwrap_or(-1.0),
-        position.x,
-        position.y,
-        position.z,
-        rotation.0.to_degrees(),
-        rotation.1.to_degrees(),
-        rotation.2.to_degrees(),
-        lin_vel.x,
-        lin_vel.y,
-        lin_vel.z,
-        ang_vel.x,
-        ang_vel.y,
-        ang_vel.z
-    );
+    stats_text.0 = format!("FPS:{}", fps.and_then(|fps| fps.average()).unwrap_or(-1.0),);
 }
 
 pub fn update_player_info(
@@ -94,30 +101,28 @@ pub fn update_player_info(
         let world_pos = player_transform.translation() + Vec3::Y * 1.5;
 
         // Convert to NDC (Normalized Device Coordinates)
-        if let Some(ndc) = camera.world_to_ndc(camera_transform, world_pos) {
-            if ndc.z > 0.0 {
-                // Convert NDC to screen coords
-                let screen_x = (ndc.x + 1.0) / 2.0 * window.width();
-                let screen_y = (1.0 - ndc.y) / 2.0 * window.height();
+        if let Some(ndc) = camera.world_to_ndc(camera_transform, world_pos)
+            && ndc.z > 0.0
+        {
+            // Convert NDC to screen coords
+            let screen_x = (ndc.x + 1.0) / 2.0 * window.width();
+            let screen_y = (1.0 - ndc.y) / 2.0 * window.height();
 
-                node.left = Val::Px(screen_x);
-                node.top = Val::Px(screen_y);
-            }
+            node.left = Val::Px(screen_x);
+            node.top = Val::Px(screen_y);
         }
 
-        let PlayerEvaluation { reward, done } = sim.current_step_state().player_states[player.id].evaluation;
+        let PlayerEvaluation { reward, done } =
+            sim.current_step_state().player_states[player.id].evaluation;
 
         text.0 = format!("{reward:.2}");
 
-        if done {
-            text_color.0 = GRAY.into();
-            // text.0 = String::from("DONE");
-            // text.0 = String::default();
-            // continue;
+        text_color.0 = if done {
+            GRAY.into()
         } else if reward >= 0.0 {
-            text_color.0 = GREEN.into();
+            GREEN.into()
         } else {
-            text_color.0 = RED.into();
+            RED.into()
         }
     }
 

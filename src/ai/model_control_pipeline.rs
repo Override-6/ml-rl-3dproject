@@ -3,7 +3,7 @@ use crate::map::ComponentType;
 use crate::player::Player;
 use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
-use crate::simulation::{evaluate_player, LaserHit, PlayerEvaluation, PlayerState, PlayerStep, SimulationState, SimulationStepState, TOTAL_STEP_AMOUNT};
+use crate::simulation::{LaserHit, PlayerState, PlayerStep, SimulationState, SimulationStepState, TOTAL_STEP_AMOUNT};
 use bevy::prelude::{Commands, Query, Res, ResMut, Resource, Transform, With};
 use bevy_math::u32;
 use bevy_rapier3d::prelude::{Sleeping, Velocity};
@@ -14,6 +14,7 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 use crossbeam_channel::{unbounded, Sender, TrySendError};
+use crate::ai::evaluation::{evaluate_player, PlayerEvaluation};
 
 #[derive(Resource)]
 pub struct ModelCommands {
@@ -167,7 +168,7 @@ fn evaluate_players(
                     rotation: transform.rotation.xyz(),
                     ang_velocity: velocity.angvel,
                     lin_velocity: velocity.linvel,
-                    lasers: vibrissae.lasers.clone().map(|s| {
+                    laser_hit: vibrissae.lasers.clone().map(|s| {
                         s.hit.map_or(
                             LaserHit {
                                 component_type: ComponentType::None,
@@ -197,7 +198,7 @@ fn evaluate_players(
                         evaluate_player(&last_player_step.state, &state, itz.0, sim, inputs)
                     }
                 });
-            evaluation.done |= is_last_step;
+            //evaluation.done |= is_last_step;
             if evaluation.done && !player.freeze {
                 player.freeze = true;
                 sleeping.sleeping = true;

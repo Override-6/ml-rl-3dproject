@@ -1,7 +1,10 @@
 # Requires: tensorflow >= 2.x
+import math
 import os
 import queue
+import shutil
 import signal
+import time
 
 import numpy as np
 from tensorflow.data import AUTOTUNE
@@ -19,13 +22,14 @@ import os
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/usr/lib/cuda"
 
-from src.hyperparameters import  *
+from src.hyperparameters import *
 
+CURRENT_MODEL_PATH = "models/model-current.keras"
+PREVIOUS_MODEL_PATH = "models/model-previous.keras"
 
 # instantiate train and prediction model
-nav_model = NavigationModel("model.keras")
+nav_model = NavigationModel(CURRENT_MODEL_PATH)
 model_lock = RWLock()
-
 optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
 
 # ------------------------
@@ -78,12 +82,15 @@ def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
 # The train_step is compiled and expects tensors. It performs forward/backward
 # and apply_gradients inside the TF graph to reduce Python overhead.
 @tf.function
-def _train_step(mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
+def _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
                 mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0):
+    """
+    returns: model monitoring
+    """
     # mb_pos: (mb, T, 3), mb_actions: (mb, T, NUM_ACTIONS), mb_old_logp: (mb, T)
     with tf.GradientTape() as tape:
         policy_seq, values_seq_pred, _, _ = nav_model.forward_sequence(
-            mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type, h0=mb_h0, c0=mb_c0
+            mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type, h0=mb_h0, c0=mb_c0
         )
         # policy_seq: (mb, T, NUM_ACTIONS), values_seq_pred: (mb, T)
 
@@ -109,7 +116,9 @@ def _train_step(mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
 
     grads = tape.gradient(total_loss, nav_model.trainable_variables)
     optimizer.apply_gradients(zip(grads, nav_model.trainable_variables))
-    return total_loss
+
+
+
 
 def ppo_update_tf(rollout):
     """
@@ -121,17 +130,15 @@ def ppo_update_tf(rollout):
     This function keeps behaviour compatible with your original shapes.
     """
     # Convert rollout format from (T, N, ...) to (N, T, ...)
-    pos_seq = np.transpose(rollout['pos'], (1, 0, 2))       # (N,T,3)
     ang_seq = np.transpose(rollout['angvel'], (1, 0, 2))
     lin_seq = np.transpose(rollout['linvel'], (1, 0, 2))
     rot_seq = np.transpose(rollout['rot'], (1, 0, 2))
     laser_dist_seq = np.transpose(rollout['laser_dist'], (1, 0, 2, 3))  # (N,T,LASERS,1)
     laser_type_seq = np.transpose(rollout['laser_type'], (1, 0, 2)).astype(np.int32)
     actions_seq = np.transpose(rollout['actions'], (1, 0, 2))  # (N,T,NUM_ACTIONS)
-    old_logp_seq = np.transpose(rollout['old_logp'], (1, 0))    # (N,T)
+    old_logp_seq = np.transpose(rollout['old_logp'], (1, 0))  # (N,T)
 
-    # compute last_value for bootstrap using train_model (but we'll run it on tensors)
-    last_pos = rollout['pos'][-1]  # (N,3)
+    # compute last_value for bootstrap using train_model
     last_ang = rollout['angvel'][-1]
     last_lin = rollout['linvel'][-1]
     last_rot = rollout['rot'][-1]
@@ -139,22 +146,22 @@ def ppo_update_tf(rollout):
     last_laser_type = rollout['laser_type'][-1].astype(np.int32)
 
     model_lock.acquire_read()
-    # Convert final states to tensors and call model once (no unnecessary .numpy() inside heavy loops)
+    # Convert final states to tensors and call model once
     last_policy_tf, last_value_tf, _, _ = nav_model.step(
-        tf.convert_to_tensor(last_pos), tf.convert_to_tensor(last_ang), tf.convert_to_tensor(last_lin),
+        tf.convert_to_tensor(last_ang), tf.convert_to_tensor(last_lin),
         tf.convert_to_tensor(last_rot), tf.convert_to_tensor(last_laser_dist), tf.convert_to_tensor(last_laser_type),
         tf.convert_to_tensor(rollout['h_last']), tf.convert_to_tensor(rollout['c_last'])
     )
     model_lock.release_read()
     last_value = last_value_tf.numpy()  # (N,)
 
-    advantages, returns = compute_gae(rollout['rewards'], rollout['values'], rollout['dones'], last_value, gamma=GAMMA, lam=LAMBDA)
+    advantages, returns = compute_gae(rollout['rewards'], rollout['values'], rollout['dones'], last_value, gamma=GAMMA,
+                                      lam=LAMBDA)
 
-    adv_seq = np.transpose(advantages, (1, 0))   # (N,T)
+    adv_seq = np.transpose(advantages, (1, 0))  # (N,T)
     returns_seq = np.transpose(returns, (1, 0))  # (N,T)
 
     # Convert everything once to TF tensors (shapes: N, T, ...)
-    pos_tf = tf.convert_to_tensor(pos_seq)
     ang_tf = tf.convert_to_tensor(ang_seq)
     lin_tf = tf.convert_to_tensor(lin_seq)
     rot_tf = tf.convert_to_tensor(rot_seq)
@@ -167,13 +174,16 @@ def ppo_update_tf(rollout):
     h0_tf = tf.convert_to_tensor(rollout['h0'])
     c0_tf = tf.convert_to_tensor(rollout['c0'])
 
+    # normalize advantage
+    adv_tf = (adv_tf - tf.reduce_mean(adv_tf)) / (tf.math.reduce_std(adv_tf) + 1e-8)
+
     # Build dataset: each example is one environment's full T-sequence
     ds = tf.data.Dataset.from_tensor_slices(
-        (pos_tf, ang_tf, lin_tf, rot_tf, laser_dist_tf, laser_type_tf,
+        (ang_tf, lin_tf, rot_tf, laser_dist_tf, laser_type_tf,
          actions_tf, old_logp_tf, adv_tf, returns_tf, h0_tf, c0_tf)
     )
 
-    num_samples = pos_seq.shape[0]
+    num_samples = ang_seq.shape[0]
 
     # Training loop: shuffle per-epoch and batch
     for epoch in range(PPO_EPOCHS):
@@ -183,17 +193,17 @@ def ppo_update_tf(rollout):
         ds_epoch = ds_epoch.batch(MINIBATCH_SIZE, drop_remainder=False).prefetch(AUTOTUNE)
 
         for batch in ds_epoch:
-            (mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
+            (mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
              mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0) = batch
 
             model_lock.acquire_write()
             # call compiled train step
-            _ = _train_step(mb_pos, mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
-                            mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
+            _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
+                                           mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
+
             model_lock.release_write()
 
     return
-
 
 
 # ------------------------
@@ -215,6 +225,7 @@ def sim_get_states(conn):
     """
     return read_player_states(conn)
 
+
 def sim_send_actions(conn, actions_per_player):
     """
     Send actions back to sim. actions_per_player: numpy array shape (N, NUM_ACTIONS) 0/1
@@ -230,6 +241,7 @@ def sim_send_actions(conn, actions_per_player):
     return send_model_outputs(conn, actions_per_player)
 
 
+
 def collect_rollout(conn, rollout_length=SEQ_LEN):
     """
     Collect a rollout of length T for all N players currently in sim.
@@ -241,7 +253,6 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     T = rollout_length
 
     # buffers (T, N, ...)
-    pos_buf = np.zeros((T, N, 3), dtype=np.float32)
     ang_buf = np.zeros((T, N, 3), dtype=np.float32)
     lin_buf = np.zeros((T, N, 3), dtype=np.float32)
     rot_buf = np.zeros((T, N, 3), dtype=np.float32)
@@ -263,7 +274,6 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     c0 = c.copy()
 
     for t in range(T):
-        pos = sim_state['position']
         ang = sim_state['angvel']
         lin = sim_state['linvel']
         rot = sim_state['rotation']
@@ -271,7 +281,6 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         laser_type = sim_state['laser']['type'].astype(np.int32)
 
         # store state
-        pos_buf[t] = pos
         ang_buf[t] = ang
         lin_buf[t] = lin
         rot_buf[t] = rot
@@ -281,7 +290,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         model_lock.acquire_read()
         # run model step (batch)
         policy_tf, value_tf, h_tf, c_tf = nav_model.step(
-            tf.convert_to_tensor(pos), tf.convert_to_tensor(ang),
+            tf.convert_to_tensor(ang),
             tf.convert_to_tensor(lin), tf.convert_to_tensor(rot),
             tf.convert_to_tensor(laser_dist), tf.convert_to_tensor(laser_type),
             tf.convert_to_tensor(h), tf.convert_to_tensor(c)
@@ -319,7 +328,6 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
                 h[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
                 c[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
     rollout = {
-        'pos': pos_buf,
         'angvel': ang_buf,
         'linvel': lin_buf,
         'rot': rot_buf,
@@ -337,34 +345,86 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     }
     return rollout
 
+
 stop = False
 
-def save_model(s, f):
+
+def handle_signal(s, f):
     global stop
     stop = True
-    print("saving model")
-    nav_model.save("model.keras")
+    save_model("model-interrupted.keras")
     exit(1)
 
-signal.signal(signal.SIGINT, save_model)
-signal.signal(signal.SIGTERM, save_model)
+
+def save_model(filename: str):
+    model_file = "models/" + filename
+    nav_model.save(model_file)
+    print(f"Model saved at {model_file}")
+
+
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
+
 
 def analyze_rollout(rollout: dict):
     avg_reward = np.mean(rollout["rewards"])
     N = rollout["h0"].shape[0]
     print("Rollout N =", N)
     print("Reward average: {}".format(avg_reward))
-    pass
+    return avg_reward
+
+
+def handle_collapse(current_update_step):
+    print("[Warning] MODEL DID COLLAPSE")
+    print("[Info] Model will be restored to its last version.")
+    print(f"[Info] LR will be divided by {LR_MULTIPLIER_PER_COLLAPSE_DETECTION} for {REQUIRED_STABLE_UPDATES_AFTER_COLLAPSE} steps")
+
+    model_lock.acquire_write()
+
+    # Rollback to last viable version.
+    # Restore the last saved model (CURRENT_MODEL_PATH)
+    # If we're in a step that just precedes a saving, it means that the last saved model (CURRENT_MODEL_PATH) is also dead.
+    # So we take the one before it (PREVIOUS_MODEL_PATH).
+    nav_model.load(CURRENT_MODEL_PATH if (current_update_step - 1) % BACKUP_RATE != 0 else PREVIOUS_MODEL_PATH)
+
+    # also reduce the LR
+    optimizer.learning_rate.assign(optimizer.learning_rate * LR_MULTIPLIER_PER_COLLAPSE_DETECTION)
+
+    model_lock.release_write()
+
+def reset_default_hyperparameters():
+    optimizer.learning_rate.assign(LR)
+    print("[Info] Restoring default hyperparameters.")
+
+def save_and_roll_model():
+    """
+    Copies current model file to previous model file, and
+    Saves current model to current model file
+    """
+    if os.path.exists(CURRENT_MODEL_PATH):
+        shutil.move(CURRENT_MODEL_PATH, PREVIOUS_MODEL_PATH)
+    nav_model.save(CURRENT_MODEL_PATH)
+    print(f"Saved and rolled model.")
+
 
 def agent_loop(rollout_queue: queue.Queue):
-    try:
-        num_updates = 10000
-        for update in range(num_updates):
+
+
+    current_update_step = 0
+
+    # last step when the model collapsed.
+    last_collapse_step = 0
+
+    last_reward = math.nan
+
+    while True:
+        current_update_step += 1
+        try:
             if stop:
                 return
 
             # merge all rollouts
-            merged_rollout = rollout_queue.get() # at least one rollout
+            merged_rollout = rollout_queue.get()  # at least one rollout
             while rollout_queue.qsize() > 0:
                 rollout = rollout_queue.get_nowait()
                 if not rollout:
@@ -374,14 +434,33 @@ def agent_loop(rollout_queue: queue.Queue):
                     if k not in merged_rollout:
                         merged_rollout[k] = v
                     else:
-                        merged_rollout[k] = np.concatenate([merged_rollout[k], v], axis=0 if k in ["h0", "c0", "h_last", "c_last"] else 1)
+                        merged_rollout[k] = np.concatenate([merged_rollout[k], v],
+                                                           axis=0 if k in ["h0", "c0", "h_last", "c_last"] else 1)
 
-            analyze_rollout(merged_rollout)
+            reward_avg = analyze_rollout(merged_rollout)
+
+            # if rewards of this step is EXACTLY the same reward of the last step,
+            # it means that there is an extremely high chance that the model collapsed
+            if last_reward == reward_avg:
+                handle_collapse(current_update_step)
+                last_collapse_step = current_update_step
+                continue
+
+            last_reward = reward_avg
+
+            if current_update_step - last_collapse_step == REQUIRED_STABLE_UPDATES_AFTER_COLLAPSE:
+                reset_default_hyperparameters()
+
             # train on rollout
-            print("Training on rollouts, this might cause simulations to halt for a moment")
+            # print("Training on rollouts, this might cause simulations to halt for a moment")
             ppo_update_tf(merged_rollout)
+
             # logging / saving model checkpoints etc.
-            print(f"Finished update {update}")
-    except Exception as e:
-        print(e)
-        exit(1)
+            print(f"Finished update {current_update_step}.")
+            if current_update_step % BACKUP_RATE == 0:
+                save_and_roll_model()
+
+        except Exception as e:
+            print(e)
+            save_model("model-error.keras")
+            # exit(1)
