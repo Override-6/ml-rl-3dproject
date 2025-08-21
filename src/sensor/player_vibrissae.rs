@@ -154,7 +154,7 @@ pub fn debug_render_lasers(
 
             let hit_color = match hit.comp_type {
                 ComponentType::Ground => YELLOW,
-                ComponentType::Object => ORANGE,
+                ComponentType::Obstacle => ORANGE,
                 ComponentType::Objective => GREEN,
                 ComponentType::Unknown => GRAY,
                 ComponentType::None => unreachable!(),

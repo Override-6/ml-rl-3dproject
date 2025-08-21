@@ -86,7 +86,7 @@ pub fn mouse_look(
     // Only rotate while left mouse button is held (change if you want always-on)
     if mouse_buttons.pressed(MouseButton::Left) {
         // Horizontal: yaw (left/right)
-        controller.yaw += delta.x * controller.sensitivity;
+        controller.yaw -= delta.x * controller.sensitivity;
         // Vertical: pitch (invert sign so moving mouse up pitches camera up)
         controller.pitch -= delta.y * controller.sensitivity;
 
@@ -134,7 +134,7 @@ pub fn camera_follow(
 
     match controller.mode {
         CameraMode::FollowPlayer => {
-            if let Ok(player_transform) = player_query.single() {
+            if let Some(player_transform) = player_query.iter().next() {
                 // Build rotation from yaw (Y) and pitch (X)
                 let rot = Quat::from_axis_angle(Vec3::Y, controller.yaw)
                     * Quat::from_axis_angle(Vec3::X, controller.pitch);
@@ -150,7 +150,7 @@ pub fn camera_follow(
 
         CameraMode::FollowObjective => {
             if let Ok(objective_transform) = objective_query.single() {
-                let rot = Quat::from_axis_angle(Vec3::Y, -controller.yaw)
+                let rot = Quat::from_axis_angle(Vec3::Y, controller.yaw)
                     * Quat::from_axis_angle(Vec3::X, controller.pitch);
 
                 let offset = rot.mul_vec3(Vec3::new(0.0, 0.0, controller.distance));
@@ -162,7 +162,7 @@ pub fn camera_follow(
 
         CameraMode::Free => {
             // Use yaw / pitch directly to set camera rotation
-            let rot = Quat::from_axis_angle(Vec3::Y, -controller.yaw)
+            let rot = Quat::from_axis_angle(Vec3::Y, controller.yaw)
                 * Quat::from_axis_angle(Vec3::X, controller.pitch);
             camera_transform.rotation = rot;
 

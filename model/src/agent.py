@@ -145,14 +145,14 @@ def ppo_update_tf(rollout):
     last_laser_dist = rollout['laser_dist'][-1]
     last_laser_type = rollout['laser_type'][-1].astype(np.int32)
 
-    model_lock.acquire_read()
+    # model_lock.acquire_read()
     # Convert final states to tensors and call model once
     last_policy_tf, last_value_tf, _, _ = nav_model.step(
         tf.convert_to_tensor(last_ang), tf.convert_to_tensor(last_lin),
         tf.convert_to_tensor(last_rot), tf.convert_to_tensor(last_laser_dist), tf.convert_to_tensor(last_laser_type),
         tf.convert_to_tensor(rollout['h_last']), tf.convert_to_tensor(rollout['c_last'])
     )
-    model_lock.release_read()
+    # model_lock.release_read()
     last_value = last_value_tf.numpy()  # (N,)
 
     advantages, returns = compute_gae(rollout['rewards'], rollout['values'], rollout['dones'], last_value, gamma=GAMMA,
@@ -196,12 +196,12 @@ def ppo_update_tf(rollout):
             (mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
              mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0) = batch
 
-            model_lock.acquire_write()
+            # model_lock.acquire_write()
             # call compiled train step
             _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
                                            mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
 
-            model_lock.release_write()
+            # model_lock.release_write()
 
     return
 
@@ -287,7 +287,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         laser_dist_buf[t] = laser_dist
         laser_type_buf[t] = laser_type
 
-        model_lock.acquire_read()
+        # model_lock.acquire_read()
         # run model step (batch)
         policy_tf, value_tf, h_tf, c_tf = nav_model.step(
             tf.convert_to_tensor(ang),
@@ -295,7 +295,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
             tf.convert_to_tensor(laser_dist), tf.convert_to_tensor(laser_type),
             tf.convert_to_tensor(h), tf.convert_to_tensor(c)
         )
-        model_lock.release_read()
+        # model_lock.release_read()
         policy = policy_tf.numpy()  # (N, NUM_ACTIONS)
         value = value_tf.numpy()
         h = h_tf.numpy()
@@ -379,7 +379,7 @@ def handle_collapse(current_update_step):
     print("[Info] Model will be restored to its last version.")
     print(f"[Info] LR will be divided by {LR_MULTIPLIER_PER_COLLAPSE_DETECTION} for {REQUIRED_STABLE_UPDATES_AFTER_COLLAPSE} steps")
 
-    model_lock.acquire_write()
+    # model_lock.acquire_write()
 
     # Rollback to last viable version.
     # Restore the last saved model (CURRENT_MODEL_PATH)
@@ -390,7 +390,7 @@ def handle_collapse(current_update_step):
     # also reduce the LR
     optimizer.learning_rate.assign(optimizer.learning_rate * LR_MULTIPLIER_PER_COLLAPSE_DETECTION)
 
-    model_lock.release_write()
+    # model_lock.release_write()
 
 def reset_default_hyperparameters():
     optimizer.learning_rate.assign(LR)

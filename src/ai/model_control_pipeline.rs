@@ -188,14 +188,14 @@ fn evaluate_players(
             )
         })
         .map(|(state, itz, mut player, mut velocity, mut sleeping)| {
-            let mut evaluation = last_state
+            let evaluation = last_state
                 .as_ref()
                 .map_or(PlayerEvaluation::default(), |ls| {
                     let last_player_step = &ls.player_states[player.id];
                     // keep null reward when the player already won
                     if last_player_step.evaluation.done { last_player_step.evaluation.clone() } else {
                         let inputs = inputs.map_or(0, |inputs| inputs.inputs[player.id]);
-                        evaluate_player(&last_player_step.state, &state, itz.0, sim, inputs)
+                        evaluate_player(&player, &last_player_step.state, &state, itz.0, sim, inputs)
                     }
                 });
             //evaluation.done |= is_last_step;

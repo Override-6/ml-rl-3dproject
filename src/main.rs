@@ -22,6 +22,7 @@ use crate::human::camera_controller::{
 use crate::human::debug_controls::debug_controls;
 use crate::human::player::move_player;
 use crate::map::{reset_map, setup_map};
+use crate::player::{player_collision_detection, reset_players};
 use crate::sensor::ground_sensor::ground_sensor_events;
 use crate::sensor::player_vibrissae::{debug_render_lasers, update_all_vibrissae_lasers};
 use crate::simulation::{
@@ -35,19 +36,18 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::pbr::DirectionalLightShadowMap;
 use bevy::prelude::*;
+use bevy::window::PresentMode;
+use bevy::winit::{UpdateMode, WinitSettings};
 use bevy_rapier3d::prelude::*;
 use bevy_rapier3d::rapier::dynamics::IntegrationParameters;
 use bincode::encode_into_slice;
 use clap::{Parser, ValueEnum};
+use log::info;
 use sensor::objective::check_trigger_zone;
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
-use bevy::window::PresentMode;
-use bevy::winit::{UpdateMode, WinitSettings};
-use log::info;
-use crate::player::reset_players;
 
 const NB_AI_PLAYERS: usize = 200;
 const NB_AI_PLAYERS_NO_HEAD: usize = 1000;
@@ -111,58 +111,61 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
                 .add(TransformPlugin),
         );
     } else {
-        app.add_plugins(DefaultPlugins
-            .build()
-            .disable::<AudioPlugin>()
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    present_mode: PresentMode::Immediate, 
+        app.add_plugins(
+            DefaultPlugins
+                .build()
+                .disable::<AudioPlugin>()
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        present_mode: PresentMode::Immediate,
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
-                ..Default::default()
-            })
         )
-            .insert_resource(WinitSettings {
-                focused_mode: UpdateMode::Continuous,    // keep running full speed when focused
-                unfocused_mode: UpdateMode::Continuous,  // keep running full speed when not focused
+        .insert_resource(WinitSettings {
+            focused_mode: UpdateMode::Continuous, // keep running full speed when focused
+            unfocused_mode: UpdateMode::Continuous, // keep running full speed when not focused
 
-                ..default()
-            })
-            // .add_plugins(RapierDebugRenderPlugin::default())
-            .add_plugins(FrameTimeDiagnosticsPlugin::default())
-            .add_systems(
-                Startup,
-                (setup_ui, spawn_arrow_resource, spawn_camera_controller),
-            )
-            .add_systems(PostStartup, (spawn_arrows_to_players.after(spawn_players), reset_players))
-            .add_systems(
-                Update,
-                (
-                    mouse_look,
-                    mouse_zoom,
-                    update_stats_text,
-                    update_player_info.after(sync_state_outputs),
-                    debug_controls,
-                ),
-            )
-            .add_systems(
-                PostUpdate,
-                (
-                    camera_follow.after(PhysicsSet::Writeback),
-                    update_stats_text,
-                    update_player_info.after(sync_state_outputs),
-                    debug_render_lasers
-                        .after(update_all_vibrissae_lasers)
-                        .after(PhysicsSet::Writeback),
-                ),
-            );
+            ..default()
+        })
+        .add_plugins(RapierDebugRenderPlugin::default())
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        .add_systems(
+            Startup,
+            (setup_ui, spawn_arrow_resource, spawn_camera_controller),
+        )
+        .add_systems(
+            PostStartup,
+            (spawn_arrows_to_players.after(spawn_players), reset_players),
+        )
+        .add_systems(
+            Update,
+            (
+                mouse_look,
+                mouse_zoom,
+                update_stats_text,
+                update_player_info.after(sync_state_outputs),
+                debug_controls,
+            ),
+        )
+        .add_systems(
+            PostUpdate,
+            (
+                camera_follow.after(PhysicsSet::Writeback),
+                update_stats_text,
+                update_player_info.after(sync_state_outputs),
+                debug_render_lasers
+                    .after(update_all_vibrissae_lasers)
+                    .after(PhysicsSet::Writeback),
+            ),
+        );
     }
 
     app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         .add_systems(
             Startup,
             (
-                (setup_map, reset_map).chain(),
                 (
                     setup_model_connection,
                     spawn_players,
@@ -170,6 +173,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
                     sync_state_outputs,
                 )
                     .chain(),
+                (setup_map, reset_players, reset_map).chain(),
             ),
         )
         .add_systems(Update, cleanup_on_exit)
@@ -178,6 +182,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
             RapierContextInitialization::InitializeDefaultRapierContext {
                 integration_parameters: IntegrationParameters {
                     dt: DELTA_TIME,
+                    max_ccd_substeps: 10,
                     ..default()
                 },
                 rapier_configuration: RapierConfiguration {
@@ -234,6 +239,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
         (
             ground_sensor_events,
             check_trigger_zone,
+            player_collision_detection,
             poll_model_directive,
             simulation_tick
         )
@@ -245,7 +251,12 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
         (
             update_all_vibrissae_lasers.after(PhysicsSet::Writeback),
             sync_state_outputs.after(PhysicsSet::Writeback),
-            (print_simulation_players, reset_simulation, reset_players, reset_map)
+            (
+                print_simulation_players,
+                reset_simulation,
+                reset_players,
+                reset_map
+            )
                 .chain()
                 .run_if(|cmd: Res<SimulationState>| cmd.resetting)
                 .before(PhysicsSet::SyncBackend),

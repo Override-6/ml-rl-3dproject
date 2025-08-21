@@ -1,13 +1,13 @@
-use std::f32::consts::SQRT_2;
-use crate::simulation::SimulationState;
-use bevy::prelude::{Component, Query, ResMut, With};
+use crate::map::{ComponentType, MAP_SQUARE_SIZE};
+use bevy::prelude::{Component, EventReader, Query, With, Without};
 use bevy_math::Vec3;
 use bevy_rapier3d::dynamics::{RapierRigidBodyHandle, Velocity};
 use bevy_rapier3d::na::UnitQuaternion;
+use bevy_rapier3d::pipeline::CollisionEvent;
 use bevy_rapier3d::plugin::WriteRapierContext;
 use bevy_rapier3d::rapier::prelude as rapier;
 use rand::Rng;
-use crate::map::MAP_SQUARE_SIZE;
+use std::f32::consts::SQRT_2;
 
 pub type PlayerId = usize;
 
@@ -16,6 +16,7 @@ pub struct Player {
     pub id: PlayerId,
     pub freeze: bool,
     pub objective_reached_at_timestep: i32,
+    pub touching_obstacle: bool,
 }
 
 impl Player {
@@ -24,11 +25,12 @@ impl Player {
             id,
             freeze: false,
             objective_reached_at_timestep: -1,
+            touching_obstacle: false,
         }
     }
 }
 
-pub const PLAYER_SPEED: f32 = 400.0;
+pub const PLAYER_SPEED: f32 = 200.0;
 
 pub const PLAYER_JUMP_SPEED: f32 = 400.0;
 
@@ -53,10 +55,15 @@ pub fn reset_players(
             rb.set_body_type(rapier::RigidBodyType::Fixed, true);
 
             rb.set_translation(
+                // rapier::Vector::new(
+                //     rng.random_range(-MAP_SQUARE_SIZE..MAP_SQUARE_SIZE),
+                //     10.0f32,
+                //     rng.random_range(-MAP_SQUARE_SIZE..MAP_SQUARE_SIZE),
+                // ),
                 rapier::Vector::new(
-                    rng.random_range(-300.0f32..300.0f32),
+                    MAP_SQUARE_SIZE - 50.0,
                     10.0f32,
-                    rng.random_range(-300.0f32..300.0f32),
+                    MAP_SQUARE_SIZE - 50.0,
                 ),
                 /*wake*/ false,
             );
@@ -82,6 +89,48 @@ pub fn reset_players(
         // 6) Also reset the Bevy Velocity component (if present) so ECS view stays consistent
         if let Some(mut vel) = vel_opt {
             *vel = Velocity::default();
+        }
+    }
+
+    Ok(())
+}
+
+pub fn player_collision_detection(
+    mut collision_events: EventReader<CollisionEvent>,
+    mut player_q: Query<&mut Player>,
+    component_type_q: Query<&ComponentType, Without<Player>>
+) -> Result<(), bevy::prelude::BevyError> {
+    for (event, _) in collision_events.par_read() {
+        match event {
+            CollisionEvent::Started(e1, e2, _flags) => {
+                let component = component_type_q.get(*e1).or_else(|_| component_type_q.get(*e2));
+                if !component.is_ok_and(|&c| c == ComponentType::Obstacle) {
+                    continue;
+                }
+                if let Ok(mut player) = player_q.get_mut(*e1) {
+                    player.touching_obstacle = true;
+                    continue;
+                }
+                if let Ok(mut player) = player_q.get_mut(*e2) {
+                    player.touching_obstacle = true;
+                    continue;
+                }
+                // update per-entity contact counters or set a 'touching' flag
+            }
+            CollisionEvent::Stopped(e1, e2, _flags) => {
+                let component = component_type_q.get(*e1).or_else(|_| component_type_q.get(*e2));
+                if !component.is_ok_and(|&c| c == ComponentType::Obstacle) {
+                    continue;
+                }
+                if let Ok(mut player) = player_q.get_mut(*e1) {
+                    player.touching_obstacle = false;
+                    continue;
+                }
+                if let Ok(mut player) = player_q.get_mut(*e2) {
+                    player.touching_obstacle = false;
+                    continue;
+                }
+            }
         }
     }
 

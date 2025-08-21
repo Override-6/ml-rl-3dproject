@@ -1,19 +1,17 @@
-use crate::player::{PLAYER_LASERS, Player, PlayerId};
+use crate::player::{Player, PLAYER_LASERS};
 use crate::sensor::ground_sensor::{GroundContact, GroundSensor};
 use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
 use bevy::asset::Assets;
-use bevy::color::Color;
 use bevy::color::palettes::basic::WHITE;
+use bevy::color::Color;
 use bevy::pbr::{MeshMaterial3d, StandardMaterial};
 use bevy::prelude::{
     Commands, Component, Entity, GlobalTransform, InheritedVisibility, Mesh, Mesh3d, Name, Query,
     ResMut, Text, TextColor, TextFont, Transform, With,
 };
 use bevy_math::prelude::Cuboid;
-use bevy_rapier3d::dynamics::{
-    AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RigidBody, Velocity,
-};
+use bevy_rapier3d::dynamics::{AdditionalMassProperties, Ccd, CoefficientCombineRule, LockedAxes, RigidBody, Velocity};
 use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
 use bevy_rapier3d::prelude::Sleeping;
 use rand::Rng;
@@ -55,7 +53,7 @@ pub fn spawn_player_characters(
             Sleeping::disabled(),
             AdditionalMassProperties::Mass(200.0),
             Collider::cuboid(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0, PLAYER_WIDTH / 2.0),
-            CollisionGroups::new(Group::GROUP_1, Group::GROUP_2),
+            CollisionGroups::new(Group::GROUP_1, Group::GROUP_2 | Group::GROUP_3),
             LockedAxes::ROTATION_LOCKED ^ LockedAxes::ROTATION_LOCKED_Y,
             Friction {
                 coefficient: 0.0,
