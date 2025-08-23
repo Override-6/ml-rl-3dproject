@@ -41,6 +41,12 @@ pub const PLAYER_LASERS: [Vec3; 5] = [Vec3::NEG_Y, Vec3::NEG_Z, Vec3::Z, Vec3::X
 pub const PLAYER_LASER_COUNT: usize = PLAYER_LASERS.len();
 pub const LASER_LENGTH: f32 = (MAP_SQUARE_SIZE * 2.0) * SQRT_2;
 
+pub const PLAYER_SPAWN_SAFE_DISTANCE: f32 = 50.0;
+
+pub fn get_player_position() -> Vec3 {
+    Vec3::new(MAP_SQUARE_SIZE - (PLAYER_SPAWN_SAFE_DISTANCE / 2.0), 10.0f32, MAP_SQUARE_SIZE - (PLAYER_SPAWN_SAFE_DISTANCE / 2.0))
+}
+
 pub fn reset_players(
     mut players: Query<(&RapierRigidBodyHandle, &mut Player, Option<&mut Velocity>), With<Player>>,
     mut rapier_ctx: WriteRapierContext,
@@ -52,7 +58,6 @@ pub fn reset_players(
         let handle = handle.0;
 
         if let Some(rb) = context.rigidbody_set.bodies.get_mut(handle) {
-            rb.set_body_type(rapier::RigidBodyType::Fixed, true);
 
             rb.set_translation(
                 // rapier::Vector::new(
@@ -60,33 +65,27 @@ pub fn reset_players(
                 //     10.0f32,
                 //     rng.random_range(-MAP_SQUARE_SIZE..MAP_SQUARE_SIZE),
                 // ),
-                rapier::Vector::new(
-                    MAP_SQUARE_SIZE - 50.0,
-                    10.0f32,
-                    MAP_SQUARE_SIZE - 50.0,
-                ),
-                /*wake*/ false,
+                rapier::Vector::from(get_player_position()),
+                false,
             );
 
             let yaw_deg = rng.random_range(0.0f32..360.0f32);
             let yaw = yaw_deg.to_radians();
             let unit_q = UnitQuaternion::from_euler_angles(0.0, yaw, 0.0);
-            rb.set_rotation(unit_q, /*wake*/ false);
+            rb.set_rotation(unit_q, false);
 
-            // 3) Zero rapier velocities (defensive)
-            rb.set_linvel(rapier::Vector::zeros(), /*wake*/ false);
-            rb.set_angvel(rapier::Vector::zeros(), /*wake*/ false);
+            rb.set_linvel(rapier::Vector::zeros(), false);
+            rb.set_angvel(rapier::Vector::zeros(), false);
 
-            // 4) Restore to Dynamic, but DON'T wake the body (false)
-            //    This keeps the body asleep until you explicitly wake a subset per-frame.
-            rb.set_body_type(rapier::RigidBodyType::Dynamic, /*wake*/ false);
+            rb.set_body_type(rapier::RigidBodyType::Dynamic, false);
         }
 
-        // 5) Reset gameplay state
+        // Reset Player component state
         player.freeze = false;
         player.objective_reached_at_timestep = -1;
+        player.touching_obstacle = false;
 
-        // 6) Also reset the Bevy Velocity component (if present) so ECS view stays consistent
+        // Reset optional velocity component
         if let Some(mut vel) = vel_opt {
             *vel = Velocity::default();
         }
@@ -95,15 +94,18 @@ pub fn reset_players(
     Ok(())
 }
 
+
 pub fn player_collision_detection(
     mut collision_events: EventReader<CollisionEvent>,
     mut player_q: Query<&mut Player>,
-    component_type_q: Query<&ComponentType, Without<Player>>
+    component_type_q: Query<&ComponentType, Without<Player>>,
 ) -> Result<(), bevy::prelude::BevyError> {
     for (event, _) in collision_events.par_read() {
         match event {
             CollisionEvent::Started(e1, e2, _flags) => {
-                let component = component_type_q.get(*e1).or_else(|_| component_type_q.get(*e2));
+                let component = component_type_q
+                    .get(*e1)
+                    .or_else(|_| component_type_q.get(*e2));
                 if !component.is_ok_and(|&c| c == ComponentType::Obstacle) {
                     continue;
                 }
@@ -118,7 +120,9 @@ pub fn player_collision_detection(
                 // update per-entity contact counters or set a 'touching' flag
             }
             CollisionEvent::Stopped(e1, e2, _flags) => {
-                let component = component_type_q.get(*e1).or_else(|_| component_type_q.get(*e2));
+                let component = component_type_q
+                    .get(*e1)
+                    .or_else(|_| component_type_q.get(*e2));
                 if !component.is_ok_and(|&c| c == ComponentType::Obstacle) {
                     continue;
                 }

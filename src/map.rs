@@ -1,3 +1,5 @@
+use crate::ai::input::Input;
+use crate::player::PLAYER_SPAWN_SAFE_DISTANCE;
 use crate::sensor::objective::Objective;
 use bevy::asset::Assets;
 use bevy::color::Color;
@@ -9,6 +11,7 @@ use bevy_rapier3d::dynamics::RigidBody;
 use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
 use bevy_rapier3d::na::UnitQuaternion;
 use rand::Rng;
+use std::ops::{BitAnd, BitOr, BitOrAssign};
 
 #[derive(Debug, Component, Clone, Copy, Eq, PartialEq)]
 #[repr(u8)]
@@ -20,12 +23,55 @@ pub enum ComponentType {
     Unknown = 4,
 }
 
-pub const COMPONENTS_COUNT: usize = 30;
+#[derive(Clone)]
+pub struct MapObstacleSet {
+    pub faces: Vec<ObstacleFaceSet>,
+}
+
+pub type ObstacleFaceSet = u8;
+
+impl BitOrAssign<ObstacleFace> for u8 {
+    fn bitor_assign(&mut self, rhs: ObstacleFace) {
+        *self |= rhs as u8;
+    }
+}
+
+impl BitOr for ObstacleFace {
+    type Output = ObstacleFaceSet;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self as u8 | rhs as u8
+    }
+}
+
+impl BitAnd<ObstacleFace> for ObstacleFaceSet {
+    type Output = ObstacleFaceSet;
+
+    fn bitand(self, rhs: ObstacleFace) -> Self::Output {
+        self as u8 & rhs as u8
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ObstacleFace {
+    North = 1,
+    South = 2,
+    East = 4,
+    West = 8,
+}
+
+pub const COMPONENTS_COUNT: usize = 31;
 pub const MAP_SQUARE_SIZE: f32 = 500.0;
 pub const COMPONENT_SIZE: f32 = 25.0;
 
+pub type ComponentId = usize;
+
 #[derive(Debug, Component)]
-pub struct MapComponent;
+pub struct MapComponent(pub(crate) ComponentId);
+
+#[derive(Debug, Component)]
+pub struct RandomPositionComponent; // add this to a component to randomize its position each simulation reset
 
 pub fn setup_map(
     mut commands: Commands,
@@ -57,7 +103,7 @@ pub fn setup_map(
     let obstacle_mesh = meshes.as_deref_mut().map(|meshes| {
         Mesh3d::from(meshes.add(Cuboid::new(
             COMPONENT_SIZE * 2.0,
-            COMPONENT_SIZE * 2.0,
+            COMPONENT_SIZE * 4.0,
             COMPONENT_SIZE * 2.0,
         )))
     });
@@ -65,17 +111,18 @@ pub fn setup_map(
         .as_deref_mut()
         .map(|materials| MeshMaterial3d::from(materials.add(Color::srgb(0.5, 0.5, 0.1))));
 
-    // Spawn N Cube Obstacles
-    for _ in 0..COMPONENTS_COUNT {
+    // Spawn N-1 Cube Obstacles, and let one for the component
+    for id in 0..(COMPONENTS_COUNT - 1) {
         let mut cube = commands.spawn((
             Transform::default(),
-            Collider::cuboid(COMPONENT_SIZE, COMPONENT_SIZE, COMPONENT_SIZE),
+            Collider::cuboid(COMPONENT_SIZE, COMPONENT_SIZE * 2.0, COMPONENT_SIZE),
             RigidBody::Fixed,
             CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
             Friction::coefficient(0.8),
             ActiveEvents::COLLISION_EVENTS,
             ComponentType::Obstacle,
-            MapComponent,
+            MapComponent(id),
+            RandomPositionComponent
         ));
 
         if let Some(mesh) = obstacle_mesh.as_ref() {
@@ -96,7 +143,7 @@ pub fn setup_map(
         ActiveEvents::COLLISION_EVENTS,
         Objective,
         ComponentType::Objective,
-        MapComponent,
+        MapComponent(COMPONENTS_COUNT - 1),
     ));
 
     if let Some(meshes) = meshes.as_mut() {
@@ -255,13 +302,14 @@ pub fn spawn_walls(
     ));
 }
 
-pub fn reset_map(mut comps_q: Query<&mut Transform, With<MapComponent>>) {
+pub fn reset_map(mut comps_q: Query<&mut Transform, With<RandomPositionComponent>>) {
     let mut rng = rand::rng();
     for mut comp in comps_q.iter_mut() {
+        let spawn_area = MAP_SQUARE_SIZE - PLAYER_SPAWN_SAFE_DISTANCE;
         comp.translation = Vec3::new(
-            rng.random_range(-MAP_SQUARE_SIZE..MAP_SQUARE_SIZE),
+            rng.random_range(-spawn_area..spawn_area),
             COMPONENT_SIZE,
-            rng.random_range(-MAP_SQUARE_SIZE..MAP_SQUARE_SIZE),
+            rng.random_range(-spawn_area..spawn_area),
         );
         let yaw_deg = rng.random_range(0.0f32..360.0f32);
         let yaw = yaw_deg.to_radians();

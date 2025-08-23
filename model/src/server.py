@@ -3,6 +3,8 @@ import socket
 import threading
 from threading import Thread
 
+from tensorflow.python.framework.errors_impl import OutOfRangeError
+
 from src import agent
 from simulation import send_reset
 
@@ -18,10 +20,14 @@ def handle_client_thread(conn, rollout_queue: queue.Queue):
         while True:
             # Blocking I/O: use agent.collect_rollout_blocking
             # You need a version of your agent that works with sockets directly
-            rollout = agent.collect_rollout(conn)
-            send_reset(conn)
-            # Use asyncio.run_coroutine_threadsafe to put into asyncio queue
-            rollout_queue.put_nowait(rollout)
+            try:
+                rollout = agent.collect_rollout(conn)
+                send_reset(conn)
+                # Use asyncio.run_coroutine_threadsafe to put into asyncio queue
+                rollout_queue.put_nowait(rollout)
+            except OutOfRangeError as e:
+                send_reset(conn)
+                pass
     except Exception as e:
         print(f"[Thread] Error: {e}")
         raise

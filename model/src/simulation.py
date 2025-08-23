@@ -51,9 +51,9 @@ def read_player_states(conn):
         # Unpack Vec3s
         vecs = struct.unpack('<' + 'f' * 12, chunk[8:48 + 8])
         state["position"][i] = np.array(vecs[0:3])
-        state["angvel"][i] = np.array(vecs[3:6])
-        state["linvel"][i] = np.array(vecs[6:9])
-        state["rotation"][i] = np.array(vecs[9:12])
+        state["rotation"][i] = np.array(vecs[3:6])
+        state["angvel"][i] = np.array(vecs[6:9])
+        state["linvel"][i] = np.array(vecs[9:12])
 
         # Unpack lasers with padding
         for j in range(PLAYER_LASER_COUNT):

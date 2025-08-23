@@ -1,4 +1,4 @@
-use crate::player::{Player, PLAYER_LASERS};
+use crate::player::{get_player_position, Player, PLAYER_LASERS};
 use crate::sensor::ground_sensor::{GroundContact, GroundSensor};
 use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
@@ -11,10 +11,14 @@ use bevy::prelude::{
     ResMut, Text, TextColor, TextFont, Transform, With,
 };
 use bevy_math::prelude::Cuboid;
-use bevy_rapier3d::dynamics::{AdditionalMassProperties, Ccd, CoefficientCombineRule, LockedAxes, RigidBody, Velocity};
+use bevy_rapier3d::dynamics::{
+    AdditionalMassProperties, CoefficientCombineRule, LockedAxes, RapierRigidBodyHandle,
+    RigidBody, Velocity,
+};
 use bevy_rapier3d::geometry::{ActiveEvents, Collider, CollisionGroups, Friction, Group, Sensor};
+use bevy_rapier3d::plugin::WriteRapierContext;
 use bevy_rapier3d::prelude::Sleeping;
-use rand::Rng;
+use bevy_rapier3d::rapier::prelude as rapier;
 
 pub const PLAYER_WIDTH: f32 = 10.0;
 pub const PLAYER_HEIGHT: f32 = 10.0;
@@ -30,22 +34,15 @@ pub fn spawn_player_characters(
 ) {
     let mut rng = rand::rng();
     let player_material = materials.map(|mut m| MeshMaterial3d(m.add(Color::srgb(0.3, 0.0, 0.25))));
-    let player_mesh = meshes.map(|mut m| Mesh3d(m.add(Cuboid::new(
-        PLAYER_WIDTH,
-        PLAYER_HEIGHT,
-        PLAYER_WIDTH,
-    ))));
+    let player_mesh =
+        meshes.map(|mut m| Mesh3d(m.add(Cuboid::new(PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_WIDTH))));
     for entity in players.iter() {
         let mut entity_commands = commands.entity(entity);
         entity_commands.insert((
             PlayerVibrissae::from(PLAYER_LASERS),
             IsInObjective(false),
             GroundContact(0),
-            Transform::from_xyz(
-                rng.random_range(-30.0..30.0),
-                10.0,
-                rng.random_range(-30.0..30.0),
-            ),
+            Transform::from_translation(get_player_position()),
             Velocity::default(),
             GlobalTransform::default(),
             InheritedVisibility::VISIBLE,
@@ -93,4 +90,24 @@ pub fn spawn_player_characters(
             ));
         }
     }
+}
+
+pub fn freeze_frozen_players(
+    player_q: Query<(&RapierRigidBodyHandle, &Player, &RigidBody)>,
+    mut rapier_ctx: WriteRapierContext,
+) -> bevy::prelude::Result<()> {
+    let mut context = rapier_ctx.single_mut()?;
+    for (handle, player, rb) in player_q.iter() {
+        if !player.freeze || *rb == RigidBody::Fixed {
+            continue;
+        }
+
+        let handle = handle.0;
+
+        if let Some(rb) = context.rigidbody_set.bodies.get_mut(handle) {
+            rb.set_body_type(rapier::RigidBodyType::Fixed, false);
+        }
+    }
+
+    Ok(())
 }

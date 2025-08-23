@@ -1,25 +1,27 @@
+use crate::ai::evaluation::{PlayerEvaluation, evaluate_player};
 use crate::ai::input::InputSet;
 use crate::map::ComponentType;
 use crate::player::Player;
 use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
-use crate::simulation::{LaserHit, PlayerState, PlayerStep, SimulationState, SimulationStepState, TOTAL_STEP_AMOUNT};
-use bevy::prelude::{Commands, Query, Res, ResMut, Resource, Transform, With};
+use crate::simulation::{
+    LaserHit, PlayerState, PlayerStepResult, SimulationConfig, SimulationState, SimulationStepResult,
+    TOTAL_STEP_AMOUNT,
+};
+use bevy::prelude::{Commands, Mut, Query, Res, ResMut, Resource, Transform, With};
 use bevy_math::u32;
 use bevy_rapier3d::prelude::{Sleeping, Velocity};
+use crossbeam_channel::{Sender, TrySendError, unbounded};
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
-use crossbeam_channel::{unbounded, Sender, TrySendError};
-use crate::ai::evaluation::{evaluate_player, PlayerEvaluation};
 
 #[derive(Resource)]
 pub struct ModelCommands {
     stream: TcpStream,
-    output_writer: OutputWriter
 }
 
 #[derive(Resource)]
@@ -32,39 +34,14 @@ pub enum ModelDirective {
     NexStep(Vec<InputSet>),
 }
 
-pub struct OutputWriter {
-    tx: Sender<Vec<u8>>,
-}
-
-impl OutputWriter {
-    pub fn start(stream: TcpStream) -> Self {
-        let (tx, rx) = unbounded::<Vec<u8>>();
-        thread::spawn(move || {
-            let mut stream = stream;
-            for msg in rx.iter() {
-                if let Err(e) = stream.write_all(&msg) {
-                    log::error!("writer thread: write_all failed: {}", e);
-                    // Optionally: attempt reconnect, break, or continue depending on policy
-                    break;
-                }
-            }
-            log::info!("writer thread exiting");
-        });
-        Self { tx }
-    }
-
-    pub fn enqueue(&self, buf: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
-        self.tx.try_send(buf)
-    }
-}
-
 impl ModelCommands {
     pub fn send_step_outputs(
         &mut self,
-        state: SimulationStepState,
+        state: SimulationStepResult,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let players_states = state.player_states.as_slice();
-        let mut buf = Vec::with_capacity(4 + players_states.len() * std::mem::size_of::<PlayerStep>());
+        let mut buf =
+            Vec::with_capacity(4 + players_states.len() * std::mem::size_of::<PlayerStepResult>());
         buf.extend_from_slice(&(players_states.len() as u32).to_le_bytes());
         let bytes = unsafe {
             std::slice::from_raw_parts(
@@ -74,13 +51,9 @@ impl ModelCommands {
         };
         buf.extend_from_slice(bytes);
 
-        match self.output_writer.enqueue(buf) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                log::warn!("output enqueue failed: {}", e);
-                Ok(())
-            }
-        }
+        self.stream.write_all(&buf)?;
+
+        Ok(())
     }
 
     fn poll_model_outputs(&mut self) -> std::io::Result<Vec<InputSet>> {
@@ -113,7 +86,6 @@ pub fn setup_model_connection(mut commands: Commands) {
     stream.set_nodelay(true).unwrap();
     commands.insert_resource(ModelCommands {
         stream: stream.try_clone().unwrap(),
-        output_writer: OutputWriter::start(stream),
     });
     sleep(Duration::from_secs(1));
 }
@@ -153,13 +125,16 @@ fn evaluate_players(
     >,
     sim: &SimulationState,
     inputs: Option<&Res<SimulationPlayersInputs>>,
-) -> SimulationStepState {
-
+) -> SimulationStepResult {
     let is_last_step = sim.timestep == TOTAL_STEP_AMOUNT;
 
-    let last_state = sim.previous_step_state();
+    let last_state = sim.step_states.last();
 
-    let player_states: Vec<_> = players
+    let mut player_states: Vec<_> = players.iter_mut().collect::<Vec<_>>();
+
+    player_states.sort_by_key(|(_, _, _, _, p, _)| p.id);
+
+    let player_states: Vec<_> = player_states
         .iter_mut()
         .map(|(vibrissae, velocity, transform, itz, player, sleeping)| {
             (
@@ -187,29 +162,50 @@ fn evaluate_players(
                 sleeping,
             )
         })
-        .map(|(state, itz, mut player, mut velocity, mut sleeping)| {
+        .map(|(state, itz, player, velocity, sleeping)| {
             let evaluation = last_state
                 .as_ref()
                 .map_or(PlayerEvaluation::default(), |ls| {
                     let last_player_step = &ls.player_states[player.id];
                     // keep null reward when the player already won
-                    if last_player_step.evaluation.done { last_player_step.evaluation.clone() } else {
+                    if last_player_step.evaluation.done {
+                        last_player_step.evaluation.clone()
+                    } else {
                         let inputs = inputs.map_or(0, |inputs| inputs.inputs[player.id]);
-                        evaluate_player(&player, &last_player_step.state, &state, itz.0, sim, inputs)
+                        evaluate_player(
+                            &state,
+                            player,
+                            itz.0,
+                            sim,
+                            inputs,
+                        )
                     }
                 });
-            //evaluation.done |= is_last_step;
-            if evaluation.done && !player.freeze {
+            if evaluation.done {
                 player.freeze = true;
-                sleeping.sleeping = true;
                 player.objective_reached_at_timestep = sim.timestep as i32;
-                *velocity = Velocity::default();
+                sleeping.sleeping = true;
+                *velocity.deref_mut() = Velocity::default();
             }
-            PlayerStep { evaluation, state }
+            PlayerStepResult { evaluation, state }
         })
         .collect();
 
-    SimulationStepState { player_states }
+    // let living_players = players
+    //     .iter()
+    //     .filter(|(_, _, _, _, p, _)| !p.freeze)
+    //     .count();
+    //
+    // let living_players_dones = player_states
+    //     .iter()
+    //     .filter(|s| !s.evaluation.done)
+    //     .count();
+    //
+    // println!("Living players (player.freeze): {}", living_players);
+    // println!("Living players (dones): {living_players_dones}");
+
+
+    SimulationStepResult { player_states }
 }
 
 pub fn poll_model_directive(
@@ -217,7 +213,6 @@ pub fn poll_model_directive(
     mut sim: ResMut<SimulationState>,
     mut commands: Commands,
 ) {
-    let t0 = std::time::Instant::now();
     // println!("Waiting for next model directive...");
     let directive = model_commands.pull_model_directive().unwrap();
 

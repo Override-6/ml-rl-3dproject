@@ -28,7 +28,7 @@ pub fn follow_all_script(
     mut app_exit: EventWriter<AppExit>,
 ) -> bevy::prelude::Result<(), BevyError> {
     let should_exit: AtomicBool = AtomicBool::default();
-    player_query.iter_mut().for_each(
+    player_query.par_iter_mut().for_each(
         |(mut velocity, transform, mut ground_contact, mut player)| {
             if player.freeze {
                 return;

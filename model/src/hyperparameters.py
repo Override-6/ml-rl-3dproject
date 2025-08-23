@@ -19,7 +19,7 @@ MINIBATCH_SIZE = 64
 CLIP_EPS = 0.2
 VALUE_COEFF = 0.5
 ENTROPY_COEFF = 0.05
-LR = 1e-4
+LR = 1e-3
 GAMMA = 0.99
 LAMBDA = 0.95
 
@@ -29,4 +29,4 @@ LAMBDA = 0.95
 # before going back to default model hyperparameters
 REQUIRED_STABLE_UPDATES_AFTER_COLLAPSE = 100
 LR_MULTIPLIER_PER_COLLAPSE_DETECTION = 0.25
-BACKUP_RATE = 500 # store model weights every 500 steps
+BACKUP_RATE = 200 # store model weights every BACKUP_RATE steps

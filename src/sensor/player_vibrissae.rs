@@ -1,13 +1,16 @@
-use crate::map::ComponentType;
-use crate::player::{Player, LASER_LENGTH, PLAYER_LASER_COUNT};
+use crate::map::{ComponentId, ComponentType, MapComponent, ObstacleFace, ObstacleFaceSet};
+use crate::player::{LASER_LENGTH, PLAYER_LASER_COUNT, Player, PlayerId};
 use crate::simulation::SimulationState;
 use bevy::color::palettes::basic::{BLUE, GREEN};
 use bevy::color::palettes::css::{GRAY, ORANGE, YELLOW};
-use bevy::prelude::{BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, Res, With};
+use bevy::prelude::{
+    BevyError, Children, Component, Entity, Gizmos, GlobalTransform, Query, Res, ResMut, With,
+};
+use bevy::utils::Parallel;
 use bevy_math::Vec3;
 use bevy_rapier3d::plugin::ReadRapierContext;
 use bevy_rapier3d::prelude::QueryFilter;
-
+use std::collections::HashMap;
 
 /// Collection of lasers sensors that allows the player to understand where are the elements of the scene, ant which distance, and which kind of element it is.
 #[derive(Component)]
@@ -58,16 +61,19 @@ fn collect_descendants(
 }
 
 pub fn update_all_vibrissae_lasers(
-    mut query: Query<(Entity, &mut PlayerVibrissae, &GlobalTransform), With<Player>>,
-    entity_type_query: Query<&ComponentType>,
+    mut query: Query<(Entity, &mut PlayerVibrissae, &GlobalTransform, &Player), With<Player>>,
+    entity_type_query: Query<(&ComponentType, Option<&MapComponent>)>,
     children_query: Query<&Children>,
     player_query: Query<&Player>,
     rapier_ctx: ReadRapierContext,
+    mut sim: ResMut<SimulationState>,
 ) -> bevy::prelude::Result<(), BevyError> {
-    query
-        .par_iter_mut()
-        .for_each(|(entity, mut vibrissae, player_gt)| {
-            update_vibrissae_lasers(
+    let mut queue: Parallel<Vec<(ComponentId, PlayerId, ObstacleFaceSet)>> = Parallel::default();
+
+    query.par_iter_mut().for_each_init(
+        || queue.borrow_local_mut(),
+        |results, (entity, mut vibrissae, player_gt, player)| {
+            let map = update_vibrissae_lasers(
                 entity,
                 vibrissae.as_mut(),
                 player_gt,
@@ -76,8 +82,15 @@ pub fn update_all_vibrissae_lasers(
                 children_query,
                 &rapier_ctx,
             )
-            .unwrap()
-        });
+            .unwrap();
+
+            results.extend(map.into_iter().map(|(comp, set)| (comp, player.id, set)));
+        },
+    );
+
+    for (component_id, player_id, set) in queue.iter_mut().flat_map(|x| x) {
+        sim.current_step_rt_info_mut().discovered_obstacles[*player_id].faces[*component_id] |= *set;
+    }
 
     Ok(())
 }
@@ -86,11 +99,11 @@ pub fn update_vibrissae_lasers(
     entity: Entity,
     vibrissae: &mut PlayerVibrissae,
     player_gt: &GlobalTransform,
-    entity_type_query: Query<&ComponentType>,
+    entity_type_query: Query<(&ComponentType, Option<&MapComponent>)>,
     player_query: Query<&Player>,
     children_query: Query<&Children>,
     rapier_ctx: &ReadRapierContext,
-) -> Result<(), BevyError> {
+) -> Result<HashMap<ComponentId, ObstacleFaceSet>, BevyError> {
     let origin = player_gt.translation();
     let rotation = player_gt.rotation();
 
@@ -102,19 +115,45 @@ pub fn update_vibrissae_lasers(
 
     let rapier_ctx = rapier_ctx.single()?;
 
+    let mut discovered_faces: HashMap<ComponentId, ObstacleFaceSet> = HashMap::default();
+
     for laser in &mut vibrissae.lasers {
         let direction = rotation * laser.direction;
 
-        let result = rapier_ctx.cast_ray(origin, direction, LASER_LENGTH.into(), false, filter);
+        let result = rapier_ctx.cast_ray_and_get_normal(
+            origin,
+            direction,
+            LASER_LENGTH.into(),
+            false,
+            filter,
+        );
 
-        if let Some((entity, toi)) = result {
-            let toi = f32::from(toi);
+        if let Some((entity, intersection)) = result &&
+            let Ok((&component_type, component)) = entity_type_query.get(entity) {
+
+            let normal = intersection.normal;
+
+            let face = if normal.z.abs() > normal.x.abs() {
+                if normal.z > 0.0 {
+                    ObstacleFace::South // +Z
+                } else {
+                    ObstacleFace::North // -Z
+                }
+            } else if normal.x > 0.0 {
+                ObstacleFace::East // +X
+            } else {
+                ObstacleFace::West // -X
+            };
+
+            if let Some(component) = component {
+                discovered_faces
+                    .entry(component.0)
+                    .and_modify(|set| *set |= face)
+                    .or_insert(face as ObstacleFaceSet);
+            }
+
+            let toi = f32::from(intersection.time_of_impact);
             let point = origin + direction * toi;
-
-            let component_type = entity_type_query
-                .get(entity)
-                .copied()
-                .unwrap_or(ComponentType::Unknown);
 
             laser.hit = Some(LaserHit {
                 distance: toi,
@@ -126,20 +165,20 @@ pub fn update_vibrissae_lasers(
         }
     }
 
-    Ok(())
+    Ok(discovered_faces)
 }
 
 pub fn debug_render_lasers(
     mut gizmos: Gizmos,
     query: Query<(&PlayerVibrissae, &GlobalTransform, &Player)>,
-    sim: Res<SimulationState>
+    sim: Res<SimulationState>,
 ) {
-    for (vibrissae, player_gt, player) in query.iter()  {
+    for (vibrissae, player_gt, player) in query.iter() {
         let origin = player_gt.translation();
         let direction = player_gt.rotation();
 
         if player.freeze {
-            continue
+            continue;
         }
 
         for laser in vibrissae.lasers.iter() {
@@ -170,9 +209,7 @@ pub fn debug_render_lasers(
         }
         if !sim.debug.print_all_lasers {
             // if we dont want to print all lasers, print only the lasers of the first player (which is the observed player)
-            return
+            return;
         }
     }
-
-
 }

@@ -71,9 +71,9 @@ pub fn mouse_look(
     // right-click cycles camera mode
     if mouse_buttons.just_pressed(MouseButton::Right) {
         controller.mode = match controller.mode {
-            CameraMode::FollowPlayer => CameraMode::FollowObjective,
-            CameraMode::FollowObjective => CameraMode::Free,
-            CameraMode::Free => CameraMode::FollowPlayer,
+            CameraMode::FollowPlayer => CameraMode::Free,
+            CameraMode::Free => CameraMode::FollowObjective,
+            CameraMode::FollowObjective => CameraMode::FollowPlayer,
         };
     }
 
@@ -115,7 +115,7 @@ pub fn mouse_zoom(
 }
 
 pub fn camera_follow(
-    player_query: Query<&Transform, With<Player>>,
+    player_query: Query<(&Player, &Transform), With<Player>>,
     objective_query: Query<&Transform, With<Objective>>,
     time: Res<Time>,
     kb: Res<ButtonInput<KeyCode>>,
@@ -134,7 +134,7 @@ pub fn camera_follow(
 
     match controller.mode {
         CameraMode::FollowPlayer => {
-            if let Some(player_transform) = player_query.iter().next() {
+            if let Some((_, player_transform)) = player_query.iter().find(|(p, _)| !p.freeze) {
                 // Build rotation from yaw (Y) and pitch (X)
                 let rot = Quat::from_axis_angle(Vec3::Y, controller.yaw)
                     * Quat::from_axis_angle(Vec3::X, controller.pitch);

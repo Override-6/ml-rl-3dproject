@@ -1,10 +1,10 @@
 # Requires: tensorflow >= 2.x
+import logging
 import math
 import os
 import queue
 import shutil
 import signal
-import time
 
 import numpy as np
 from tensorflow.data import AUTOTUNE
@@ -31,6 +31,9 @@ PREVIOUS_MODEL_PATH = "models/model-previous.keras"
 nav_model = NavigationModel(CURRENT_MODEL_PATH)
 model_lock = RWLock()
 optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
+nav_model_step_tf = tf.function(nav_model.step,
+                                experimental_compile=False)  # cannot compile due to lstm which is not completely supported yet
+
 
 # ------------------------
 # Utils: probability/log-prob for multi-binary actions (Bernoulli)
@@ -41,6 +44,7 @@ def bernoulli_log_probs(probs, actions):
     actions: same shape, 0/1
     returns: log_prob summed over action dims -> shape (batch, ...)
     """
+    actions = tf.cast(actions, tf.float32)
     eps = 1e-8
     logp = actions * tf.math.log(probs + eps) + (1.0 - actions) * tf.math.log(1.0 - probs + eps)
     return tf.reduce_sum(logp, axis=-1)
@@ -49,6 +53,7 @@ def bernoulli_log_probs(probs, actions):
 # ------------------------
 # GAE advantage computation
 # ------------------------
+@tf.function
 def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
     """
     rewards: (T, Nenv)
@@ -57,22 +62,48 @@ def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
     last_value: (Nenv, SEQ_LEN) bootstrap value for step T
     returns: advantages (T, Nenv), returns (T, Nenv)
     """
-    T = rewards.shape[0]
-    N = rewards.shape[1]
-    advantages = np.zeros((T, N), dtype=np.float32)
-    last_adv = np.zeros(N, dtype=np.float32)
-    # iterate reversed
-    for t in reversed(range(T)):
-        if t == T - 1:
-            next_val = last_value
-            next_nonterminal = 1.0 - dones[t]
-        else:
-            next_val = values[t + 1]
-            next_nonterminal = 1.0 - dones[t]
-        delta = rewards[t] + gamma * next_val * next_nonterminal - values[t]
-        last_adv = delta + gamma * lam * next_nonterminal * last_adv
-        advantages[t] = last_adv
-    returns = advantages + values
+
+    rewards = tf.cast(rewards, tf.float32)
+    values = tf.cast(values, tf.float32)
+    dones = tf.cast(dones, tf.float32)
+    last_value = tf.cast(last_value, tf.float32)
+
+
+    # Build next_values: next_values[t] = values[t+1] for t < T-1, and last_value for t == T-1
+    # values[1:] shape = (T-1, N); tf.expand_dims(last_value, 0) shape = (1, N)
+    next_values = tf.concat([values[1:], tf.expand_dims(last_value, axis=0)], axis=0)
+
+    # next_nonterminal = 1 - dones[t]
+    next_nonterminal = 1.0 - dones
+
+    # delta_t = r_t + gamma * next_value_t * next_nonterminal_t - value_t
+    delta = rewards + gamma * next_values * next_nonterminal - values  # shape (T, N)
+
+    # We'll compute advantages by scanning from last -> first.
+    # Reverse along time axis, scan forward, then reverse back.
+    delta_rev = tf.reverse(delta, axis=[0])  # (T, N) reversed in time
+    nonterm_rev = tf.reverse(next_nonterminal, axis=[0])  # (T, N) reversed
+
+    # initializer: zeros per environment (shape (N,))
+    # Use the same dtype as tensors
+    init_adv = tf.zeros_like(last_value, dtype=tf.float32)  # shape (N,)
+
+    # scan function: given next_adv (accumulator) and current elems, compute adv_t
+    def _scan_fn(acc, elems):
+        # elems is a tuple (delta_t_rev, nonterm_t_rev)
+        delta_t, nonterm_t = elems
+        # acc is advantage_{t+1} (since we're scanning reversed)
+        return delta_t + gamma * lam * nonterm_t * acc
+
+    # tf.scan expects elems to be a Tensor or nested structure of tensors with leading dim T
+    # We pass a tuple of (delta_rev, nonterm_rev). The returned `adv_rev` will have shape (T, N).
+    advs_rev = tf.scan(_scan_fn, (delta_rev, nonterm_rev), initializer=init_adv)
+
+    # advs_rev is in reversed time order -> flip back
+    advantages = tf.reverse(advs_rev, axis=[0])  # (T, N)
+
+    returns = advantages + values  # (T, N)
+
     return advantages, returns
 
 
@@ -104,7 +135,9 @@ def _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
         clipped = tf.clip_by_value(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * mb_adv
         policy_loss = -tf.reduce_mean(tf.minimum(unclipped, clipped))
 
-        value_loss = VALUE_COEFF * tf.reduce_mean(tf.square(mb_returns - values_seq_pred))
+        huber = tf.keras.losses.Huber(delta=1.0, reduction=tf.keras.losses.Reduction.NONE)
+        value_error = huber(mb_returns, values_seq_pred)  # shape (mb, T)
+        value_loss = 0.25 * tf.reduce_mean(value_error)  # reduce coefficient from 0.5 -> 0.25
 
         eps = 1e-8
         entropy_per_action = -(policy_seq * tf.math.log(policy_seq + eps) +
@@ -115,9 +148,18 @@ def _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
         total_loss = policy_loss + value_loss + entropy_loss
 
     grads = tape.gradient(total_loss, nav_model.trainable_variables)
-    optimizer.apply_gradients(zip(grads, nav_model.trainable_variables))
 
+    # Debug: print loss terms and gradient norms
+    # compute global norm but handle None grads
+    safe_grads = [g if g is not None else tf.zeros_like(v) for g, v in zip(grads, nav_model.trainable_variables)]
+    # grad_norm = tf.linalg.global_norm(safe_grads)
+    # tf.print("policy_loss=", policy_loss, "value_loss=", value_loss, "entropy=", entropy, "total_loss=", total_loss,
+    #          "grad_norm=", grad_norm)
+    # tf.print("mean_return=", tf.reduce_mean(mb_returns),
+    #              "mean_value_pred=", tf.reduce_mean(values_seq_pred),
+    #              "adv mean/std:", tf.reduce_mean(mb_adv), tf.math.reduce_std(mb_adv))
 
+    optimizer.apply_gradients(zip(safe_grads, nav_model.trainable_variables))
 
 
 def ppo_update_tf(rollout):
@@ -130,30 +172,30 @@ def ppo_update_tf(rollout):
     This function keeps behaviour compatible with your original shapes.
     """
     # Convert rollout format from (T, N, ...) to (N, T, ...)
-    ang_seq = np.transpose(rollout['angvel'], (1, 0, 2))
-    lin_seq = np.transpose(rollout['linvel'], (1, 0, 2))
-    rot_seq = np.transpose(rollout['rot'], (1, 0, 2))
-    laser_dist_seq = np.transpose(rollout['laser_dist'], (1, 0, 2, 3))  # (N,T,LASERS,1)
-    laser_type_seq = np.transpose(rollout['laser_type'], (1, 0, 2)).astype(np.int32)
-    actions_seq = np.transpose(rollout['actions'], (1, 0, 2))  # (N,T,NUM_ACTIONS)
-    old_logp_seq = np.transpose(rollout['old_logp'], (1, 0))  # (N,T)
+    ang_seq = tf.transpose(rollout['angvel'], [1, 0, 2])
+    lin_seq = tf.transpose(rollout['linvel'], [1, 0, 2])
+    rot_seq = tf.transpose(rollout['rot'], [1, 0, 2])
+    laser_dist_seq = tf.transpose(rollout['laser_dist'], [1, 0, 2, 3])
+    laser_type_seq = tf.transpose(rollout['laser_type'], [1, 0, 2])
+    actions_seq = tf.transpose(rollout['actions'], [1, 0, 2])
+    old_logp_seq = tf.transpose(rollout['old_logp'], [1, 0])
 
     # compute last_value for bootstrap using train_model
     last_ang = rollout['angvel'][-1]
     last_lin = rollout['linvel'][-1]
     last_rot = rollout['rot'][-1]
     last_laser_dist = rollout['laser_dist'][-1]
-    last_laser_type = rollout['laser_type'][-1].astype(np.int32)
+    last_laser_type = rollout['laser_type'][-1]
 
     # model_lock.acquire_read()
     # Convert final states to tensors and call model once
-    last_policy_tf, last_value_tf, _, _ = nav_model.step(
-        tf.convert_to_tensor(last_ang), tf.convert_to_tensor(last_lin),
-        tf.convert_to_tensor(last_rot), tf.convert_to_tensor(last_laser_dist), tf.convert_to_tensor(last_laser_type),
-        tf.convert_to_tensor(rollout['h_last']), tf.convert_to_tensor(rollout['c_last'])
+    last_policy_tf, last_value_tf, _, _ = nav_model_step_tf(
+        last_ang, last_lin,
+        last_rot, last_laser_dist, last_laser_type,
+        rollout['h_last'], rollout['c_last']
     )
     # model_lock.release_read()
-    last_value = last_value_tf.numpy()  # (N,)
+    last_value = last_value_tf
 
     advantages, returns = compute_gae(rollout['rewards'], rollout['values'], rollout['dones'], last_value, gamma=GAMMA,
                                       lam=LAMBDA)
@@ -162,17 +204,17 @@ def ppo_update_tf(rollout):
     returns_seq = np.transpose(returns, (1, 0))  # (N,T)
 
     # Convert everything once to TF tensors (shapes: N, T, ...)
-    ang_tf = tf.convert_to_tensor(ang_seq)
-    lin_tf = tf.convert_to_tensor(lin_seq)
-    rot_tf = tf.convert_to_tensor(rot_seq)
-    laser_dist_tf = tf.convert_to_tensor(laser_dist_seq)
-    laser_type_tf = tf.convert_to_tensor(laser_type_seq)
-    actions_tf = tf.convert_to_tensor(actions_seq)
-    old_logp_tf = tf.convert_to_tensor(old_logp_seq)
-    adv_tf = tf.convert_to_tensor(adv_seq)
-    returns_tf = tf.convert_to_tensor(returns_seq)
-    h0_tf = tf.convert_to_tensor(rollout['h0'])
-    c0_tf = tf.convert_to_tensor(rollout['c0'])
+    ang_tf = tf.cast(ang_seq, tf.float32)
+    lin_tf = tf.cast(lin_seq, tf.float32)
+    rot_tf = tf.cast(rot_seq, tf.float32)
+    laser_dist_tf = tf.cast(laser_dist_seq, tf.float32)
+    laser_type_tf = tf.cast(laser_type_seq, tf.int32)
+    actions_tf = tf.cast(actions_seq, tf.int32)
+    old_logp_tf = tf.cast(old_logp_seq, tf.float32)
+    adv_tf = tf.cast(adv_seq, tf.float32)
+    returns_tf = tf.cast(returns_seq, tf.float32)
+    h0_tf = tf.cast(rollout['h0'], tf.float32)
+    c0_tf = tf.cast(rollout['c0'], tf.float32)
 
     # normalize advantage
     adv_tf = (adv_tf - tf.reduce_mean(adv_tf)) / (tf.math.reduce_std(adv_tf) + 1e-8)
@@ -199,7 +241,7 @@ def ppo_update_tf(rollout):
             # model_lock.acquire_write()
             # call compiled train step
             _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
-                                           mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
+                        mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
 
             # model_lock.release_write()
 
@@ -226,6 +268,9 @@ def sim_get_states(conn):
     return read_player_states(conn)
 
 
+powers_of_two = 2 ** np.arange(NUM_ACTIONS - 1, -1, -1)
+
+
 def sim_send_actions(conn, actions_per_player):
     """
     Send actions back to sim. actions_per_player: numpy array shape (N, NUM_ACTIONS) 0/1
@@ -234,99 +279,142 @@ def sim_send_actions(conn, actions_per_player):
     arr = actions_per_player.astype(int)
 
     # Compute powers of 2 for each bit (assuming most significant bit first)
-    powers_of_two = 2 ** np.arange(arr.shape[1] - 1, -1, -1)
+    # powers_of_two = 2 ** np.arange(arr.shape[1] - 1, -1, -1)
 
     # Multiply and sum along axis 1
     actions_per_player = arr.dot(powers_of_two)
     return send_model_outputs(conn, actions_per_player)
-
-
 
 def collect_rollout(conn, rollout_length=SEQ_LEN):
     """
     Collect a rollout of length T for all N players currently in sim.
     Returns the 'rollout' dict used by ppo_update.
     """
-    # initial read to get number of players N and initial states
-    sim_state = sim_get_states(conn)
-    N = sim_state['position'].shape[0]
+    # initial read to get number of players N and initial states (sim returns numpy)
     T = rollout_length
 
-    # buffers (T, N, ...)
-    ang_buf = np.zeros((T, N, 3), dtype=np.float32)
-    lin_buf = np.zeros((T, N, 3), dtype=np.float32)
-    rot_buf = np.zeros((T, N, 3), dtype=np.float32)
-    laser_dist_buf = np.zeros((T, N, LASERS_PER_PLAYER, 1), dtype=np.float32)
-    laser_type_buf = np.zeros((T, N, LASERS_PER_PLAYER), dtype=np.int32)
+    # TensorArray buffers (write(t, tensor) each step). We'll slice the stacks at the end.
+    ang_buf = tf.TensorArray(tf.float32, size=T)
+    lin_buf = tf.TensorArray(tf.float32, size=T)
+    rot_buf = tf.TensorArray(tf.float32, size=T)
+    laser_dist_buf = tf.TensorArray(tf.float32, size=T)
+    laser_type_buf = tf.TensorArray(tf.int32, size=T)
 
-    actions_buf = np.zeros((T, N, NUM_ACTIONS), dtype=np.float32)
-    old_logp_buf = np.zeros((T, N), dtype=np.float32)
-    values_buf = np.zeros((T, N), dtype=np.float32)
-    rewards_buf = np.zeros((T, N), dtype=np.float32)
-    dones_buf = np.zeros((T, N), dtype=np.float32)
+    actions_buf = tf.TensorArray(tf.int32, size=T)  # store actions as int32
+    old_logp_buf = tf.TensorArray(tf.float32, size=T)
+    values_buf = tf.TensorArray(tf.float32, size=T)
+    rewards_buf = tf.TensorArray(tf.float32, size=T)
+    dones_buf = tf.TensorArray(tf.float32, size=T)
 
-    # initial LSTM states per env
-    h = np.zeros((N, LSTM_UNITS), dtype=np.float32)
-    c = np.zeros((N, LSTM_UNITS), dtype=np.float32)
+    sim_state = sim_get_states(conn)
+    N = int(sim_state['position'].shape[0])
 
-    # also store initial states to use at training time
-    h0 = h.copy()
-    c0 = c.copy()
+    # initial LSTM states per env as TF tensors
+    h = tf.zeros((N, LSTM_UNITS), dtype=tf.float32)
+    c = tf.zeros((N, LSTM_UNITS), dtype=tf.float32)
+
+    # also store initial states to use at training time (TF copies)
+    h0 = tf.identity(h)
+    c0 = tf.identity(c)
+
+    t_written = 0
+
+
 
     for t in range(T):
-        ang = sim_state['angvel']
-        lin = sim_state['linvel']
-        rot = sim_state['rotation']
-        laser_dist = sim_state['laser']['distance']
-        laser_type = sim_state['laser']['type'].astype(np.int32)
+        # t1 = round(time.time() * 1000)
 
-        # store state
-        ang_buf[t] = ang
-        lin_buf[t] = lin
-        rot_buf[t] = rot
-        laser_dist_buf[t] = laser_dist
-        laser_type_buf[t] = laser_type
+        # convert sim_state (numpy) to TF tensors
+        ang = tf.convert_to_tensor(sim_state['angvel'], dtype=tf.float32)  # (N,3)
+        lin = tf.convert_to_tensor(sim_state['linvel'], dtype=tf.float32)  # (N,3)
+        rot = tf.convert_to_tensor(sim_state['rotation'], dtype=tf.float32)  # (N,3)
+        laser_dist = tf.convert_to_tensor(sim_state['laser']['distance'], dtype=tf.float32)  # (N, LASERS, 1)
+        laser_type = tf.convert_to_tensor(sim_state['laser']['type'].astype(np.int32), dtype=tf.int32)  # (N, LASERS)
 
-        # model_lock.acquire_read()
-        # run model step (batch)
-        policy_tf, value_tf, h_tf, c_tf = nav_model.step(
-            tf.convert_to_tensor(ang),
-            tf.convert_to_tensor(lin), tf.convert_to_tensor(rot),
-            tf.convert_to_tensor(laser_dist), tf.convert_to_tensor(laser_type),
-            tf.convert_to_tensor(h), tf.convert_to_tensor(c)
+        # write states to TF buffers
+        ang_buf = ang_buf.write(t, ang)
+        lin_buf = lin_buf.write(t, lin)
+        rot_buf = rot_buf.write(t, rot)
+        laser_dist_buf = laser_dist_buf.write(t, laser_dist)
+        laser_type_buf = laser_type_buf.write(t, laser_type)
+
+        # run model step (TF accepts tf.Tensors)
+        policy_tf, value_tf, h_tf, c_tf = nav_model_step_tf(
+            ang, lin, rot, laser_dist, laser_type, h, c
         )
-        # model_lock.release_read()
-        policy = policy_tf.numpy()  # (N, NUM_ACTIONS)
-        value = value_tf.numpy()
-        h = h_tf.numpy()
-        c = c_tf.numpy()
-        # Sample actions from bernoulli (we use probabilities policy)
-        actions = (np.random.rand(*policy.shape) < policy)  # (N, SEQ_LEN, NUM_ACTIONS,)
-        # compute log_probs under the policy we used (store old_logp for PPO)
+
+        # sample actions in TF
+        rnd = tf.random.uniform(tf.shape(policy_tf), dtype=policy_tf.dtype)
+        actions_tf = tf.cast(rnd < policy_tf, tf.int32)  # shape (N, NUM_ACTIONS)
+
+        # send actions to simulation (sim requires numpy)
+        actions_np = actions_tf.numpy()  # convert only for IPC
+        # t2 = round(time.time() * 1000)
+        sim_send_actions(conn, actions_np)
+
+        # update LSTM states from model outputs (TF tensors)
+        h = tf.identity(h_tf)
+        c = tf.identity(c_tf)
+
+        # compute logp in TF (float)
         eps = 1e-8
-        logp = np.sum(actions * np.log(policy + eps) + (1 - actions) * np.log(1 - policy + eps),
-                      axis=-1)  # (N, SEQ_LEN)
+        policy_float = tf.cast(policy_tf, tf.float32)
+        actions_float = tf.cast(actions_tf, tf.float32)
+        logp_tf = tf.reduce_sum(
+            actions_float * tf.math.log(policy_float + eps) +
+            (1.0 - actions_float) * tf.math.log(1.0 - policy_float + eps),
+            axis=-1
+        )  # shape (N,)
 
-        # send actions to simulation
-        sim_send_actions(conn, actions)
+        # store action / logging info (TF)
+        actions_buf = actions_buf.write(t, actions_tf)  # int32
+        old_logp_buf = old_logp_buf.write(t, logp_tf)  # float32
+        values_buf = values_buf.write(t, tf.cast(value_tf, tf.float32))  # ensure float32
 
-        sim_state = sim_get_states(conn)  # compute from the next state the rewards, dones etc
+        # read next sim state (numpy) and convert to TF for storage
+        sim_state = sim_get_states(conn)
+        # t3 = round(time.time() * 1000)
 
-        rewards = sim_state["reward"]
-        dones = sim_state["done"]
+        rewards = tf.convert_to_tensor(np.asarray(sim_state["reward"], dtype=np.float32), dtype=tf.float32)  # (N,)
+        dones = tf.convert_to_tensor(np.asarray(sim_state["done"], dtype=np.float32), dtype=tf.float32)  # (N,)
 
-        # store action / logging info
-        actions_buf[t] = actions
-        old_logp_buf[t] = logp
-        values_buf[t] = value
-        rewards_buf[t] = rewards
-        dones_buf[t] = dones
+        rewards_buf = rewards_buf.write(t, rewards)
+        dones_buf = dones_buf.write(t, dones)
 
-        # reset LSTM states where done==1
-        for i in range(N):
-            if dones[i]:
-                h[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
-                c[i] = np.zeros(LSTM_UNITS, dtype=np.float32)
+        # reset LSTM states where done==1 (TF ops)
+        mask = 1.0 - tf.expand_dims(dones, axis=-1)  # shape (N,1)
+        h = h * mask  # broadcasting: (N, LSTM_UNITS) * (N,1)
+        c = c * mask
+
+        for t in [ang_buf, lin_buf, rot_buf, laser_dist_buf, laser_type_buf, actions_buf, old_logp_buf, values_buf,
+                  rewards_buf, dones_buf]:
+            t.mark_used()
+
+        # check living players (convert to python scalar for control flow)
+        living_players = float(tf.reduce_sum(mask).numpy())
+        t_written += 1
+
+        if living_players == 0.0:
+            # all done: stop early
+            break
+
+        # t4 = round(time.time() * 1000)
+        # sim_time = t3 - t2
+        # total_time = t4 - t1
+        # model_time = total_time - sim_time
+        # print(f"total time: {total_time}ms, model time: {model_time}ms, simulation time: {sim_time}ms")
+
+    # stack and slice to actual length t_written
+    ang_buf = ang_buf.stack()[:t_written]  # (Tcollected, N, 3)
+    lin_buf = lin_buf.stack()[:t_written]
+    rot_buf = rot_buf.stack()[:t_written]
+    laser_dist_buf = laser_dist_buf.stack()[:t_written]  # (Tcollected, N, LASERS, 1)
+    laser_type_buf = laser_type_buf.stack()[:t_written]
+    actions_buf = actions_buf.stack()[:t_written]  # (Tcollected, N, NUM_ACTIONS)
+    old_logp_buf = old_logp_buf.stack()[:t_written]  # (Tcollected, N)
+    values_buf = values_buf.stack()[:t_written]  # (Tcollected, N)
+    rewards_buf = rewards_buf.stack()[:t_written]  # (Tcollected, N)
+    dones_buf = dones_buf.stack()[:t_written]  # (Tcollected, N)
     rollout = {
         'angvel': ang_buf,
         'linvel': lin_buf,
@@ -338,9 +426,9 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         'values': values_buf,
         'rewards': rewards_buf,
         'dones': dones_buf,
-        'h0': h0,
+        'h0': h0,  # TF tensor shape (N, LSTM_UNITS)
         'c0': c0,
-        'h_last': h,  # final states after last step
+        'h_last': h,  # final TF tensors (N, LSTM_UNITS)
         'c_last': c
     }
     return rollout
@@ -377,7 +465,8 @@ def analyze_rollout(rollout: dict):
 def handle_collapse(current_update_step):
     print("[Warning] MODEL DID COLLAPSE")
     print("[Info] Model will be restored to its last version.")
-    print(f"[Info] LR will be divided by {LR_MULTIPLIER_PER_COLLAPSE_DETECTION} for {REQUIRED_STABLE_UPDATES_AFTER_COLLAPSE} steps")
+    print(
+        f"[Info] LR will be divided by {LR_MULTIPLIER_PER_COLLAPSE_DETECTION} for {REQUIRED_STABLE_UPDATES_AFTER_COLLAPSE} steps")
 
     # model_lock.acquire_write()
 
@@ -385,16 +474,18 @@ def handle_collapse(current_update_step):
     # Restore the last saved model (CURRENT_MODEL_PATH)
     # If we're in a step that just precedes a saving, it means that the last saved model (CURRENT_MODEL_PATH) is also dead.
     # So we take the one before it (PREVIOUS_MODEL_PATH).
-    nav_model.load(CURRENT_MODEL_PATH if (current_update_step - 1) % BACKUP_RATE != 0 else PREVIOUS_MODEL_PATH)
+    nav_model.load_weights(CURRENT_MODEL_PATH if (current_update_step - 1) % BACKUP_RATE != 0 else PREVIOUS_MODEL_PATH)
 
     # also reduce the LR
     optimizer.learning_rate.assign(optimizer.learning_rate * LR_MULTIPLIER_PER_COLLAPSE_DETECTION)
 
     # model_lock.release_write()
 
+
 def reset_default_hyperparameters():
     optimizer.learning_rate.assign(LR)
     print("[Info] Restoring default hyperparameters.")
+
 
 def save_and_roll_model():
     """
@@ -408,8 +499,6 @@ def save_and_roll_model():
 
 
 def agent_loop(rollout_queue: queue.Queue):
-
-
     current_update_step = 0
 
     # last step when the model collapsed.
@@ -425,17 +514,17 @@ def agent_loop(rollout_queue: queue.Queue):
 
             # merge all rollouts
             merged_rollout = rollout_queue.get()  # at least one rollout
-            while rollout_queue.qsize() > 0:
-                rollout = rollout_queue.get_nowait()
-                if not rollout:
-                    continue
-
-                for k, v in rollout.items():
-                    if k not in merged_rollout:
-                        merged_rollout[k] = v
-                    else:
-                        merged_rollout[k] = np.concatenate([merged_rollout[k], v],
-                                                           axis=0 if k in ["h0", "c0", "h_last", "c_last"] else 1)
+            # while rollout_queue.qsize() > 0:
+            #     rollout = rollout_queue.get_nowait()
+            #     if not rollout:
+            #         continue
+            #
+            #     for k, v in rollout.items():
+            #         if k not in merged_rollout:
+            #             merged_rollout[k] = v
+            #         else:
+            #             merged_rollout[k] = np.concatenate([merged_rollout[k], v],
+            #                                                axis=0 if k in ["h0", "c0", "h_last", "c_last"] else 1)
 
             reward_avg = analyze_rollout(merged_rollout)
 
@@ -459,8 +548,9 @@ def agent_loop(rollout_queue: queue.Queue):
             print(f"Finished update {current_update_step}.")
             if current_update_step % BACKUP_RATE == 0:
                 save_and_roll_model()
-
+        except KeyboardInterrupt:
+            return
         except Exception as e:
-            print(e)
+            # print(e)
             save_model("model-error.keras")
-            # exit(1)
+            raise
