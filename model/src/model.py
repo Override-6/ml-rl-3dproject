@@ -40,6 +40,7 @@ class NavigationModel(tf.keras.Model):
         # Heads
         # Policy uses sigmoid for independent binary actions
         self.policy_head = layers.Dense(NUM_ACTIONS, activation='sigmoid', name="policy")
+        self.look_head = layers.Dense(1, activation='sigmoid', name="look")
         self.value_head = layers.Dense(1, activation=None, name="value")
 
         self._dummy_build()
@@ -128,7 +129,11 @@ class NavigationModel(tf.keras.Model):
 
         policy = self.policy_head(out)  # (batch, NUM_ACTIONS)
         value = tf.squeeze(self.value_head(out), axis=-1)  # (batch,)
-        return policy, value, h_next, c_next
+
+        # look direction: raw -> normalized to unit vector
+        look_raw = self.look_head(out)  # (batch, 1)
+
+        return policy, value, look_raw, h_next, c_next
 
     @tf.function
     def forward_sequence(self, angvel_seq, linvel_seq, rot_seq, laser_dist_seq, laser_type_seq,
@@ -175,4 +180,7 @@ class NavigationModel(tf.keras.Model):
 
         policy_seq = self.policy_head(outputs)  # (batch, seq_len, NUM_ACTIONS)
         values_seq = tf.squeeze(self.value_head(outputs), axis=-1)  # (batch, seq_len)
-        return policy_seq, values_seq, h_last, c_last
+
+        look_raw_seq = self.look_head(outputs)  # (batch, seq_len, 1)
+
+        return policy_seq, values_seq, look_raw_seq, h_last, c_last

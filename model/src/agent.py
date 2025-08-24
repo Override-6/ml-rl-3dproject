@@ -53,7 +53,7 @@ def bernoulli_log_probs(probs, actions):
 # ------------------------
 # GAE advantage computation
 # ------------------------
-@tf.function
+# @tf.function
 def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
     """
     rewards: (T, Nenv)
@@ -67,7 +67,6 @@ def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
     values = tf.cast(values, tf.float32)
     dones = tf.cast(dones, tf.float32)
     last_value = tf.cast(last_value, tf.float32)
-
 
     # Build next_values: next_values[t] = values[t+1] for t < T-1, and last_value for t == T-1
     # values[1:] shape = (T-1, N); tf.expand_dims(last_value, 0) shape = (1, N)
@@ -114,13 +113,13 @@ def compute_gae(rewards, values, dones, last_value, gamma=GAMMA, lam=LAMBDA):
 # and apply_gradients inside the TF graph to reduce Python overhead.
 @tf.function
 def _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
-                mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0):
+                mb_actions, mb_look_dir, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0):
     """
     returns: model monitoring
     """
     # mb_pos: (mb, T, 3), mb_actions: (mb, T, NUM_ACTIONS), mb_old_logp: (mb, T)
     with tf.GradientTape() as tape:
-        policy_seq, values_seq_pred, _, _ = nav_model.forward_sequence(
+        policy_seq, values_seq_pred, look_seq_pred, _, _ = nav_model.forward_sequence(
             mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type, h0=mb_h0, c0=mb_c0
         )
         # policy_seq: (mb, T, NUM_ACTIONS), values_seq_pred: (mb, T)
@@ -146,6 +145,20 @@ def _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
         entropy_loss = -ENTROPY_COEFF * entropy
 
         total_loss = policy_loss + value_loss + entropy_loss
+
+        pred_flat = tf.reshape(look_seq_pred, (-1, 1))
+        tgt_flat = tf.reshape(tf.cast(mb_look_dir, tf.float32), (-1, 1))
+
+        # Ensure both are normalized
+        pred_flat = tf.math.l2_normalize(pred_flat, axis=-1)
+        tgt_flat = tf.math.l2_normalize(tgt_flat, axis=-1)
+
+        # cosine loss = mean(1 - dot(pred, tgt))
+        cos_sim = tf.reduce_sum(pred_flat * tgt_flat, axis=-1)
+        look_loss = tf.reduce_mean(1.0 - cos_sim)
+
+        # Add to total loss
+        total_loss = total_loss + look_loss
 
     grads = tape.gradient(total_loss, nav_model.trainable_variables)
 
@@ -178,6 +191,7 @@ def ppo_update_tf(rollout):
     laser_dist_seq = tf.transpose(rollout['laser_dist'], [1, 0, 2, 3])
     laser_type_seq = tf.transpose(rollout['laser_type'], [1, 0, 2])
     actions_seq = tf.transpose(rollout['actions'], [1, 0, 2])
+    look_dir_seq = tf.transpose(rollout['look_dir'], [1, 0, 2])
     old_logp_seq = tf.transpose(rollout['old_logp'], [1, 0])
 
     # compute last_value for bootstrap using train_model
@@ -189,7 +203,7 @@ def ppo_update_tf(rollout):
 
     # model_lock.acquire_read()
     # Convert final states to tensors and call model once
-    last_policy_tf, last_value_tf, _, _ = nav_model_step_tf(
+    last_policy_tf, last_value_tf, last_look_tf, _, _ = nav_model_step_tf(
         last_ang, last_lin,
         last_rot, last_laser_dist, last_laser_type,
         rollout['h_last'], rollout['c_last']
@@ -210,6 +224,7 @@ def ppo_update_tf(rollout):
     laser_dist_tf = tf.cast(laser_dist_seq, tf.float32)
     laser_type_tf = tf.cast(laser_type_seq, tf.int32)
     actions_tf = tf.cast(actions_seq, tf.int32)
+    look_dir_tf = tf.cast(look_dir_seq, tf.float32)
     old_logp_tf = tf.cast(old_logp_seq, tf.float32)
     adv_tf = tf.cast(adv_seq, tf.float32)
     returns_tf = tf.cast(returns_seq, tf.float32)
@@ -222,7 +237,7 @@ def ppo_update_tf(rollout):
     # Build dataset: each example is one environment's full T-sequence
     ds = tf.data.Dataset.from_tensor_slices(
         (ang_tf, lin_tf, rot_tf, laser_dist_tf, laser_type_tf,
-         actions_tf, old_logp_tf, adv_tf, returns_tf, h0_tf, c0_tf)
+         actions_tf, look_dir_tf, old_logp_tf, adv_tf, returns_tf, h0_tf, c0_tf)
     )
 
     num_samples = ang_seq.shape[0]
@@ -236,12 +251,12 @@ def ppo_update_tf(rollout):
 
         for batch in ds_epoch:
             (mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
-             mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0) = batch
+             mb_actions, mb_look_dir, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0) = batch
 
             # model_lock.acquire_write()
             # call compiled train step
             _train_step(mb_ang, mb_lin, mb_rot, mb_laser_dist, mb_laser_type,
-                        mb_actions, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
+                        mb_actions, mb_look_dir, mb_old_logp, mb_adv, mb_returns, mb_h0, mb_c0)
 
             # model_lock.release_write()
 
@@ -268,22 +283,23 @@ def sim_get_states(conn):
     return read_player_states(conn)
 
 
-powers_of_two = 2 ** np.arange(NUM_ACTIONS - 1, -1, -1)
+powers_of_two = 2 ** np.arange(NUM_ACTIONS - 2, -1, -1)
 
 
-def sim_send_actions(conn, actions_per_player):
+def sim_send_actions(conn, actions_per_player, look_directions):
     """
     Send actions back to sim. actions_per_player: numpy array shape (N, NUM_ACTIONS) 0/1
     """
     # Ensure it's integers
-    arr = actions_per_player.astype(int)
+    arr = actions_per_player[:, :-1].astype(np.int8)
 
     # Compute powers of 2 for each bit (assuming most significant bit first)
     # powers_of_two = 2 ** np.arange(arr.shape[1] - 1, -1, -1)
 
     # Multiply and sum along axis 1
-    actions_per_player = arr.dot(powers_of_two)
-    return send_model_outputs(conn, actions_per_player)
+    pulse_input_set_per_player = arr.dot(powers_of_two)
+    return send_model_outputs(conn, pulse_input_set_per_player, look_directions)
+
 
 def collect_rollout(conn, rollout_length=SEQ_LEN):
     """
@@ -299,8 +315,8 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     rot_buf = tf.TensorArray(tf.float32, size=T)
     laser_dist_buf = tf.TensorArray(tf.float32, size=T)
     laser_type_buf = tf.TensorArray(tf.int32, size=T)
-
     actions_buf = tf.TensorArray(tf.int32, size=T)  # store actions as int32
+    look_dir_buf = tf.TensorArray(tf.float32, size=T)
     old_logp_buf = tf.TensorArray(tf.float32, size=T)
     values_buf = tf.TensorArray(tf.float32, size=T)
     rewards_buf = tf.TensorArray(tf.float32, size=T)
@@ -318,8 +334,6 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     c0 = tf.identity(c)
 
     t_written = 0
-
-
 
     for t in range(T):
         # t1 = round(time.time() * 1000)
@@ -339,7 +353,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         laser_type_buf = laser_type_buf.write(t, laser_type)
 
         # run model step (TF accepts tf.Tensors)
-        policy_tf, value_tf, h_tf, c_tf = nav_model_step_tf(
+        policy_tf, value_tf, look_tf, h_tf, c_tf = nav_model_step_tf(
             ang, lin, rot, laser_dist, laser_type, h, c
         )
 
@@ -348,9 +362,10 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         actions_tf = tf.cast(rnd < policy_tf, tf.int32)  # shape (N, NUM_ACTIONS)
 
         # send actions to simulation (sim requires numpy)
-        actions_np = actions_tf.numpy()  # convert only for IPC
+        actions_np = actions_tf.numpy()
+        look_np = look_tf.numpy()
         # t2 = round(time.time() * 1000)
-        sim_send_actions(conn, actions_np)
+        sim_send_actions(conn, actions_np, look_np)
 
         # update LSTM states from model outputs (TF tensors)
         h = tf.identity(h_tf)
@@ -368,6 +383,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
 
         # store action / logging info (TF)
         actions_buf = actions_buf.write(t, actions_tf)  # int32
+        look_dir_buf = look_dir_buf.write(t, look_tf)
         old_logp_buf = old_logp_buf.write(t, logp_tf)  # float32
         values_buf = values_buf.write(t, tf.cast(value_tf, tf.float32))  # ensure float32
 
@@ -386,8 +402,8 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         h = h * mask  # broadcasting: (N, LSTM_UNITS) * (N,1)
         c = c * mask
 
-        for t in [ang_buf, lin_buf, rot_buf, laser_dist_buf, laser_type_buf, actions_buf, old_logp_buf, values_buf,
-                  rewards_buf, dones_buf]:
+        for t in [ang_buf, lin_buf, rot_buf, laser_dist_buf, laser_type_buf, actions_buf, look_dir_buf, old_logp_buf,
+                  values_buf, rewards_buf, dones_buf]:
             t.mark_used()
 
         # check living players (convert to python scalar for control flow)
@@ -395,7 +411,8 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         t_written += 1
 
         if living_players == 0.0:
-            # all done: stop early
+            if t_written == 1:
+                return None
             break
 
         # t4 = round(time.time() * 1000)
@@ -411,6 +428,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
     laser_dist_buf = laser_dist_buf.stack()[:t_written]  # (Tcollected, N, LASERS, 1)
     laser_type_buf = laser_type_buf.stack()[:t_written]
     actions_buf = actions_buf.stack()[:t_written]  # (Tcollected, N, NUM_ACTIONS)
+    look_dir_buf = look_dir_buf.stack()[:t_written]  # (Tcollected, N, NUM_ACTIONS)
     old_logp_buf = old_logp_buf.stack()[:t_written]  # (Tcollected, N)
     values_buf = values_buf.stack()[:t_written]  # (Tcollected, N)
     rewards_buf = rewards_buf.stack()[:t_written]  # (Tcollected, N)
@@ -422,6 +440,7 @@ def collect_rollout(conn, rollout_length=SEQ_LEN):
         'laser_dist': laser_dist_buf,
         'laser_type': laser_type_buf,
         'actions': actions_buf,
+        'look_dir': look_dir_buf,
         'old_logp': old_logp_buf,
         'values': values_buf,
         'rewards': rewards_buf,
@@ -553,4 +572,4 @@ def agent_loop(rollout_queue: queue.Queue):
         except Exception as e:
             # print(e)
             save_model("model-error.keras")
-            raise
+            raise e

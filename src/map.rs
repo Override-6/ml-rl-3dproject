@@ -1,4 +1,3 @@
-use crate::ai::input::Input;
 use crate::player::PLAYER_SPAWN_SAFE_DISTANCE;
 use crate::sensor::objective::Objective;
 use bevy::asset::Assets;
@@ -20,7 +19,7 @@ pub enum ComponentType {
     Ground = 1,
     Obstacle = 2,
     Objective = 3,
-    Unknown = 4,
+    Wall = 4,
 }
 
 #[derive(Clone)]
@@ -61,7 +60,7 @@ pub enum ObstacleFace {
     West = 8,
 }
 
-pub const COMPONENTS_COUNT: usize = 31;
+pub const COMPONENTS_COUNT: usize = 6;
 pub const MAP_SQUARE_SIZE: f32 = 500.0;
 pub const COMPONENT_SIZE: f32 = 25.0;
 
@@ -135,7 +134,7 @@ pub fn setup_map(
 
     // Spawn objective
     let mut objective = commands.spawn((
-        Transform::from_xyz(-MAP_SQUARE_SIZE, 0.0, -MAP_SQUARE_SIZE),
+        Transform::from_xyz(-MAP_SQUARE_SIZE + PLAYER_SPAWN_SAFE_DISTANCE, 0.0, -MAP_SQUARE_SIZE + PLAYER_SPAWN_SAFE_DISTANCE),
         RigidBody::Fixed,
         Collider::cuboid(COMPONENT_SIZE, COMPONENT_SIZE, COMPONENT_SIZE),
         CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
@@ -197,7 +196,7 @@ pub fn spawn_walls(
     let inner_height = 40.0;
     let tall_height = 4000.0;
     let thickness = 10.0;
-    let collider_thickness = 100.0;
+    let collider_thickness = 1000.0;
     let map_half = MAP_SQUARE_SIZE; // map goes from -MAP_SQUARE_SIZE .. +MAP_SQUARE_SIZE
     let map_length = MAP_SQUARE_SIZE * 2.0;
     let inner_y = inner_height * 0.5;
@@ -219,7 +218,7 @@ pub fn spawn_walls(
     let spawn_inner_x = |commands: &mut Commands, x: f32| {
         let mut cmd = commands.spawn((
             Transform::from_xyz(x, inner_y, 0.0),
-            ComponentType::Obstacle,
+            ComponentType::Wall,
         ));
         if let Some(mesh) = wall_mesh_x.as_ref() {
             cmd.insert(mesh.clone());
@@ -232,7 +231,7 @@ pub fn spawn_walls(
     let spawn_inner_z = |commands: &mut Commands, z: f32| {
         let mut cmd = commands.spawn((
             Transform::from_xyz(0.0, inner_y, z),
-            ComponentType::Obstacle,
+            ComponentType::Wall,
         ));
         if let Some(mesh) = wall_mesh_z.as_ref() {
             cmd.insert(mesh.clone());
@@ -259,7 +258,7 @@ pub fn spawn_walls(
         ActiveEvents::COLLISION_EVENTS,
         RigidBody::Fixed,
         CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
-        ComponentType::Obstacle,
+        ComponentType::Wall,
     ));
     // -X outer
     commands.spawn((
@@ -272,7 +271,7 @@ pub fn spawn_walls(
         ActiveEvents::COLLISION_EVENTS,
         RigidBody::Fixed,
         CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
-        ComponentType::Obstacle,
+        ComponentType::Wall,
     ));
     // +Z outer
     commands.spawn((
@@ -285,7 +284,7 @@ pub fn spawn_walls(
         ActiveEvents::COLLISION_EVENTS,
         RigidBody::Fixed,
         CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
-        ComponentType::Obstacle,
+        ComponentType::Wall,
     ));
     // -Z outer
     commands.spawn((
@@ -298,7 +297,7 @@ pub fn spawn_walls(
         ActiveEvents::COLLISION_EVENTS,
         RigidBody::Fixed,
         CollisionGroups::new(Group::GROUP_2, Group::GROUP_1),
-        ComponentType::Obstacle,
+        ComponentType::Wall,
     ));
 }
 

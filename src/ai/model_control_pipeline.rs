@@ -1,21 +1,19 @@
 use crate::ai::evaluation::{PlayerEvaluation, evaluate_player};
-use crate::ai::input::InputSet;
+use crate::ai::input::{Input, PulseInputSet};
 use crate::map::ComponentType;
 use crate::player::Player;
 use crate::sensor::objective::IsInObjective;
 use crate::sensor::player_vibrissae::PlayerVibrissae;
 use crate::simulation::{
-    LaserHit, PlayerState, PlayerStepResult, SimulationConfig, SimulationState, SimulationStepResult,
-    TOTAL_STEP_AMOUNT,
+    LaserHit, PlayerState, PlayerStepResult, SimulationState, SimulationStepResult,
 };
-use bevy::prelude::{Commands, Mut, Query, Res, ResMut, Resource, Transform, With};
+use bevy::prelude::{Commands, Query, Res, ResMut, Resource, Transform, Vec3, With};
+use bevy::reflect::List;
 use bevy_math::u32;
 use bevy_rapier3d::prelude::{Sleeping, Velocity};
-use crossbeam_channel::{Sender, TrySendError, unbounded};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::ops::{Deref, DerefMut};
-use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -26,12 +24,12 @@ pub struct ModelCommands {
 
 #[derive(Resource)]
 pub struct SimulationPlayersInputs {
-    pub inputs: Vec<InputSet>,
+    pub inputs: Vec<Input>,
 }
 
 pub enum ModelDirective {
     ResetSimulation,
-    NexStep(Vec<InputSet>),
+    NexStep(Vec<PulseInputSet>, Vec<f32>),
 }
 
 impl ModelCommands {
@@ -40,8 +38,7 @@ impl ModelCommands {
         state: SimulationStepResult,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let players_states = state.player_states.as_slice();
-        let mut buf =
-            Vec::with_capacity(4 + players_states.len() * std::mem::size_of::<PlayerStepResult>());
+        let mut buf = Vec::with_capacity(4 + players_states.len() * size_of::<PlayerStepResult>());
         buf.extend_from_slice(&(players_states.len() as u32).to_le_bytes());
         let bytes = unsafe {
             std::slice::from_raw_parts(
@@ -56,25 +53,35 @@ impl ModelCommands {
         Ok(())
     }
 
-    fn poll_model_outputs(&mut self) -> std::io::Result<Vec<InputSet>> {
+    fn poll_model_outputs(&mut self) -> std::io::Result<(Vec<PulseInputSet>, Vec<f32>)> {
         let mut head_buff = [0u8; size_of::<u32>()];
         self.stream.read_exact(&mut head_buff)?;
         let item_count = u32::from_le_bytes(head_buff) as usize;
 
-        let mut inputs = vec![0u8 as InputSet; item_count];
-        self.stream.read_exact(&mut inputs)?;
+        let mut pulse_inputs = vec![0u8 as PulseInputSet; item_count];
+        self.stream.read_exact(&mut pulse_inputs)?;
 
-        Ok(inputs)
+        let mut laser_directions = vec![0u8; item_count * size_of::<f32>()];
+        self.stream.read_exact(&mut laser_directions)?;
+
+        let laser_directions = unsafe {
+            std::slice::from_raw_parts(laser_directions.as_ptr() as *const f32, item_count)
+                .to_vec()
+        };
+
+        Ok((pulse_inputs, laser_directions))
     }
 
-    pub fn pull_model_directive(&mut self) -> std::io::Result<ModelDirective> {
+    pub fn poll_model_directive(&mut self) -> std::io::Result<ModelDirective> {
         let mut packet_type_buff = [0u8; size_of::<u32>()];
         self.stream.read_exact(&mut packet_type_buff)?;
         let packet_type = u32::from_le_bytes(packet_type_buff);
 
         let result = match packet_type {
             0 => Ok(ModelDirective::ResetSimulation),
-            1 => self.poll_model_outputs().map(ModelDirective::NexStep),
+            1 => self
+                .poll_model_outputs()
+                .map(|(p, d)| ModelDirective::NexStep(p, d)),
             _ => panic!("Received unexpected packet type {packet_type}"),
         };
         result
@@ -126,7 +133,7 @@ fn evaluate_players(
     sim: &SimulationState,
     inputs: Option<&Res<SimulationPlayersInputs>>,
 ) -> SimulationStepResult {
-    let is_last_step = sim.timestep == TOTAL_STEP_AMOUNT;
+    // let is_last_step = sim.timestep == TOTAL_STEP_AMOUNT;
 
     let last_state = sim.step_states.last();
 
@@ -171,19 +178,15 @@ fn evaluate_players(
                     if last_player_step.evaluation.done {
                         last_player_step.evaluation.clone()
                     } else {
-                        let inputs = inputs.map_or(0, |inputs| inputs.inputs[player.id]);
-                        evaluate_player(
-                            &state,
-                            player,
-                            itz.0,
-                            sim,
-                            inputs,
-                        )
+                        let inputs = inputs.map_or(0, |inputs| inputs.inputs[player.id].pulse);
+                        evaluate_player(&state, player, itz.0, sim, inputs)
                     }
                 });
             if evaluation.done {
                 player.freeze = true;
-                player.objective_reached_at_timestep = sim.timestep as i32;
+                if evaluation.reward >= 0.0 {
+                    player.objective_reached_at_timestep = sim.timestep as i32;
+                }
                 sleeping.sleeping = true;
                 *velocity.deref_mut() = Velocity::default();
             }
@@ -204,7 +207,6 @@ fn evaluate_players(
     // println!("Living players (player.freeze): {}", living_players);
     // println!("Living players (dones): {living_players_dones}");
 
-
     SimulationStepResult { player_states }
 }
 
@@ -214,15 +216,24 @@ pub fn poll_model_directive(
     mut commands: Commands,
 ) {
     // println!("Waiting for next model directive...");
-    let directive = model_commands.pull_model_directive().unwrap();
+    let directive = model_commands.poll_model_directive().unwrap();
 
     match directive {
         ModelDirective::ResetSimulation => {
             // println!("\rReceived reset packet, resetting simulation...");
             sim.resetting = true;
         }
-        ModelDirective::NexStep(inputs) => {
+        ModelDirective::NexStep(pulses, laser_dir) => {
             // println!("\rReceived model outputs, advancing simulation...");
+
+            let inputs = pulses
+                .into_iter()
+                .zip(laser_dir.into_iter())
+                .map(|(p, d)| Input {
+                    pulse: p,
+                    laser_dir: d,
+                })
+                .collect::<Vec<_>>();
 
             commands.insert_resource(SimulationPlayersInputs { inputs });
         }

@@ -17,6 +17,7 @@ pub struct Player {
     pub freeze: bool,
     pub objective_reached_at_timestep: i32,
     pub touching_obstacle: bool,
+    pub is_interacting: bool,
 }
 
 impl Player {
@@ -26,6 +27,7 @@ impl Player {
             freeze: false,
             objective_reached_at_timestep: -1,
             touching_obstacle: false,
+            is_interacting: false,       
         }
     }
 }
@@ -36,12 +38,13 @@ pub const PLAYER_JUMP_SPEED: f32 = 400.0;
 
 pub const PLAYER_TURN_SPEED: f32 = 10.0;
 
-pub const PLAYER_LASERS: [Vec3; 5] = [Vec3::NEG_Y, Vec3::NEG_Z, Vec3::Z, Vec3::X, Vec3::NEG_X];
+// pub const PLAYER_LASERS: [Vec3; 5] = [Vec3::NEG_Y, Vec3::NEG_Z, Vec3::Z, Vec3::X, Vec3::NEG_X];
+pub const PLAYER_LASERS: [Vec3; 1] = [Vec3::NEG_Z];
 
 pub const PLAYER_LASER_COUNT: usize = PLAYER_LASERS.len();
-pub const LASER_LENGTH: f32 = (MAP_SQUARE_SIZE * 2.0) * SQRT_2;
+pub const LASER_LENGTH: f32 = 10000.0;
 
-pub const PLAYER_SPAWN_SAFE_DISTANCE: f32 = 50.0;
+pub const PLAYER_SPAWN_SAFE_DISTANCE: f32 = 150.0;
 
 pub fn get_player_position() -> Vec3 {
     Vec3::new(MAP_SQUARE_SIZE - (PLAYER_SPAWN_SAFE_DISTANCE / 2.0), 10.0f32, MAP_SQUARE_SIZE - (PLAYER_SPAWN_SAFE_DISTANCE / 2.0))
@@ -106,7 +109,7 @@ pub fn player_collision_detection(
                 let component = component_type_q
                     .get(*e1)
                     .or_else(|_| component_type_q.get(*e2));
-                if !component.is_ok_and(|&c| c == ComponentType::Obstacle) {
+                if !component.is_ok_and(|&c| c == ComponentType::Obstacle || c == ComponentType::Wall) {
                     continue;
                 }
                 if let Ok(mut player) = player_q.get_mut(*e1) {

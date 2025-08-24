@@ -1,6 +1,6 @@
-use crate::ai::input::InputSet;
+use crate::ai::input::PulseInputSet;
 use crate::map::{ComponentType, MAP_SQUARE_SIZE};
-use crate::player::{Player, LASER_LENGTH};
+use crate::player::{LASER_LENGTH, Player};
 use crate::simulation::{PlayerState, SimulationState};
 use bevy::prelude::Vec3;
 
@@ -53,7 +53,7 @@ fn keep_objects_in_sight_evaluation(
             ComponentType::Objective => 2.0,
             ComponentType::Obstacle => 0.5,
             ComponentType::Ground => 0.5,
-            ComponentType::Unknown => 0.0,
+            ComponentType::Wall => 0.0,
             ComponentType::None => -0.5,
         };
     }
@@ -85,7 +85,7 @@ fn keep_objective_in_front_sight_and_go_to_evaluation(
             ComponentType::Objective => 1.0 + 4.0 * distance_reward,
             ComponentType::Obstacle => 0.0, // 1 max per lasers, 4 max
             ComponentType::Ground => 0.0,
-            ComponentType::Unknown => 0.0,
+            ComponentType::Wall => 0.0,
             ComponentType::None => -0.5, // -2 max
         };
     }
@@ -103,9 +103,20 @@ fn avoid_obstacles_and_explore_evaluation(
     in_objective: bool,
     player: &Player,
     sim: &SimulationState,
+    objective_pos: Vec3,
 ) -> PlayerEvaluation {
     let mut reward = 0.0;
     let mut done = false;
+    let previous_state = &sim.current_step_state().player_states[player.id].state;
+
+    let previous_objective_distance = objective_pos.distance(previous_state.position);
+    let current_objective_distance = objective_pos.distance(player_current_state.position);
+
+    if previous_objective_distance > current_objective_distance {
+        reward += 0.1;
+    } else {
+        reward -= 0.5
+    }
 
     // force the model to act
     reward -= 0.01;
@@ -115,18 +126,14 @@ fn avoid_obstacles_and_explore_evaluation(
     for hit in player_current_state.laser_hit.iter() {
         match hit.component_type {
             ComponentType::Objective => {
-                if hit.distance > 0.0 {
-                    // Small shaping reward for being closer to objective
-                    let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
-                    reward += 0.5 * closeness.max(0.0);
-                }
+                // Small shaping reward for being closer to objective
+                let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
+                reward += 0.5 * closeness.max(0.0) / (1.0 + sim.timestep as f32 * 0.01);
             }
             ComponentType::Obstacle => {
-                if hit.distance > 0.0 {
-                    // Smooth penalty for being near obstacles
-                    let proximity = 1.0 - (hit.distance / 20.0);
-                    reward -= 0.5 * proximity.clamp(0.0, 1.0);
-                }
+                // Smooth penalty for being near obstacles
+                let proximity = 1.0 - (hit.distance / 20.0);
+                reward -= 0.5 * proximity.clamp(0.0, 1.0);
             }
             // Ground, Unknown, None => no shaping reward
             _ => {}
@@ -138,7 +145,10 @@ fn avoid_obstacles_and_explore_evaluation(
         let current_discovered_obstacles = &current_step_rt_info.discovered_obstacles[player.id];
         let previous_discovered_obstacles = &previous_step_rt_info.discovered_obstacles[player.id];
 
-        let face_comparison = current_discovered_obstacles.faces.iter().zip(previous_discovered_obstacles.faces.iter());
+        let face_comparison = current_discovered_obstacles
+            .faces
+            .iter()
+            .zip(previous_discovered_obstacles.faces.iter());
 
         // reward when a new face is discovered
         for (current, previous) in face_comparison {
@@ -160,6 +170,73 @@ fn avoid_obstacles_and_explore_evaluation(
     PlayerEvaluation { reward, done }
 }
 
+fn aim_at_obstacles_evaluation(
+    player_current_state: &PlayerState,
+    player: &Player,
+    inputs: PulseInputSet,
+    sim: &SimulationState,
+    in_objective: bool,
+) -> PlayerEvaluation {
+    let mut reward = 0.0;
+    let mut done = false;
+
+    // force the model to act
+    reward -= 0.01;
+
+    const LASER_MINIMAL_DISTANCE: f32 = LASER_LENGTH;
+
+    for hit in player_current_state.laser_hit.iter() {
+        match hit.component_type {
+            ComponentType::Objective => {
+                let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
+                reward += 1.0 * closeness.max(0.0);
+            }
+            // ComponentType::Obstacle => {
+            //     let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
+            //     reward += 0.5 * closeness.max(0.0);
+            // }
+            // ComponentType::Wall => {
+            //     let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
+            //     reward += 0.05 * closeness.max(0.0);
+            // }
+            ComponentType::Wall => {
+                let closeness = 1.0 - (hit.distance / 40.0);
+                reward -= 1.0 * closeness.max(0.0);
+            }
+            _ => {}
+        }
+    }
+
+    let current_step_rt_info = sim.current_step_rt_info();
+    if let Some(previous_step_rt_info) = sim.previous_step_rt_info() {
+        let current_discovered_obstacles = &current_step_rt_info.discovered_obstacles[player.id];
+        let previous_discovered_obstacles = &previous_step_rt_info.discovered_obstacles[player.id];
+
+        let face_comparison = current_discovered_obstacles
+            .faces
+            .iter()
+            .zip(previous_discovered_obstacles.faces.iter());
+
+        // reward when a new face is discovered
+        for (current, previous) in face_comparison {
+            if current != previous {
+                assert!(current > previous);
+                reward += 1.0;
+            }
+        }
+    }
+
+    if player.touching_obstacle {
+        reward = -5.0;
+        done = true;
+    } else if in_objective {
+        reward = 10.0;
+        done = true;
+    }
+
+    PlayerEvaluation { reward, done }
+}
+
 /// As evaluation is not executed on the very first step (as it's a "zeroize" step which outputs initial positions)
 /// This allows safely unwrapping sim.previous_step_state() and sim.previous_step_rt_info()
 pub fn evaluate_player(
@@ -167,11 +244,13 @@ pub fn evaluate_player(
     player: &Player,
     in_objective: bool,
     sim: &SimulationState,
-    inputs: InputSet,
+    inputs: PulseInputSet,
 ) -> PlayerEvaluation {
     let previous_state = &sim.current_step_state().player_states[player.id].state;
-    // go_to_objective_evaluation(previous_state, current_state, in_objective, Vec3::new(-MAP_SQUARE_SIZE, 0.0, -MAP_SQUARE_SIZE))
+    let objective_pos = current_state.position + Vec3::new(0.0, 0.0, MAP_SQUARE_SIZE / 2.0);
+    // go_to_objective_evaluation(previous_state, current_state, in_objective, )
     // keep_objects_in_sight_evaluation(player_current_state, in_objective)
     // keep_objective_in_front_sight_and_go_to_evaluation(player_current_state, in_objective)
-    avoid_obstacles_and_explore_evaluation(current_state, in_objective, player, sim)
+    // avoid_obstacles_and_explore_evaluation(current_state, in_objective, player, sim, objective_pos)
+    aim_at_obstacles_evaluation(current_state, player, inputs, sim, in_objective)
 }

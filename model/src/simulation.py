@@ -3,7 +3,7 @@ import struct
 
 import numpy as np
 
-PLAYER_LASER_COUNT = 5  # adjust to match your Rust constant
+from src.hyperparameters import LASERS_PER_PLAYER
 
 
 def recv_exact(conn: socket.socket, size):
@@ -23,7 +23,8 @@ def read_player_states(conn):
     N = struct.unpack('<I', raw_len)[0]
 
     # Read PlayerStates
-    player_state_size = 96  # sizeof(PlayerState);
+    # player_state_size = 96  # sizeof(PlayerState);
+    player_state_size = 64
 
     data = recv_exact(conn, N * player_state_size)
 
@@ -36,8 +37,8 @@ def read_player_states(conn):
         "angvel": np.zeros(shape=(N, 3), dtype=np.float32),
         "linvel": np.zeros(shape=(N, 3), dtype=np.float32),
         "laser": {
-            "distance": np.zeros(shape=(N, PLAYER_LASER_COUNT, 1), dtype=np.float32),
-            "type": np.zeros(shape=(N, PLAYER_LASER_COUNT,), dtype=np.float32),
+            "distance": np.zeros(shape=(N, LASERS_PER_PLAYER, 1), dtype=np.float32),
+            "type": np.zeros(shape=(N, LASERS_PER_PLAYER,), dtype=np.float32),
         }
     }
 
@@ -56,7 +57,7 @@ def read_player_states(conn):
         state["linvel"][i] = np.array(vecs[9:12])
 
         # Unpack lasers with padding
-        for j in range(PLAYER_LASER_COUNT):
+        for j in range(LASERS_PER_PLAYER):
             base = 48 + 8 + j * 8
             distance = struct.unpack('<f', chunk[base:base + 4])[0]
             component_type = chunk[base + 4]  # u8
@@ -66,13 +67,13 @@ def read_player_states(conn):
     # print("Received Player States")
     return state
 
-def send_model_outputs(conn, outputs):
+def send_model_outputs(conn, pulse_outputs, directional_laser):
     conn.sendall(struct.pack('<I', 1)) # packet type: send_model_output
-    conn.sendall(struct.pack('<I', len(outputs)))  # send count
-    for inp in outputs:
-        conn.sendall(struct.pack('B', inp))
-
-    # print("Sent model outputs")
+    conn.sendall(struct.pack('<I', len(pulse_outputs)))  # send count
+    for i in pulse_outputs:
+        conn.sendall(struct.pack('B', i))
+    for i in directional_laser:
+        conn.sendall(struct.pack('<f', i))
 
 def send_reset(conn):
     conn.sendall(struct.pack('<I', 0)) # packet type: reset simulation

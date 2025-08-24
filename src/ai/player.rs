@@ -1,14 +1,16 @@
-use crate::ai::input::Input;
+use std::f32::consts::PI;
+use crate::ai::input::PulseInput;
 use crate::ai::model_control_pipeline::SimulationPlayersInputs;
-use crate::player::{PLAYER_SPEED, PLAYER_TURN_SPEED, Player, PLAYER_JUMP_SPEED};
+use crate::player::{Player, PLAYER_JUMP_SPEED, PLAYER_SPEED, PLAYER_TURN_SPEED};
 use crate::sensor::ground_sensor::GroundContact;
-use crate::simulation::{SimulationState, DELTA_TIME};
+use crate::sensor::player_vibrissae::PlayerVibrissae;
+use crate::simulation::DELTA_TIME;
 use bevy::app::AppExit;
 use bevy::prelude::{BevyError, Component, EventWriter, Query, Res, Transform, Vec3, With};
-use bevy::time::Time;
 use bevy_rapier3d::prelude::Velocity;
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, Ordering};
+use rand::Rng;
 
 #[derive(Component)]
 pub struct AIPlayer;
@@ -20,16 +22,16 @@ pub fn follow_all_script(
             &Transform,
             &mut GroundContact,
             &mut Player,
+            &mut PlayerVibrissae,
         ),
         With<AIPlayer>,
     >,
     sim: Res<SimulationPlayersInputs>,
-    sim_state: Res<SimulationState>,
     mut app_exit: EventWriter<AppExit>,
 ) -> bevy::prelude::Result<(), BevyError> {
     let should_exit: AtomicBool = AtomicBool::default();
     player_query.par_iter_mut().for_each(
-        |(mut velocity, transform, mut ground_contact, mut player)| {
+        |(mut velocity, transform, mut ground_contact, mut player, mut vibrissae)| {
             if player.freeze {
                 return;
             }
@@ -40,7 +42,7 @@ pub fn follow_all_script(
                 ground_contact.deref_mut(),
                 player.deref_mut(),
                 &sim,
-                &sim_state
+                &mut vibrissae
             );
             if should_stop {
                 should_exit.store(should_stop, Ordering::Relaxed);
@@ -62,23 +64,37 @@ fn follow_script(
     ground_contact: &mut GroundContact,
     ai_player: &mut Player,
     inputs: &Res<SimulationPlayersInputs>,
-    sim: &Res<SimulationState>
+    vibrissae: &mut PlayerVibrissae,
 ) -> bool {
-    let input_set = inputs.inputs[ai_player.id];
+
+    let input = &inputs.inputs[ai_player.id];
+
+    let pulse_set = input.pulse;
+    let laser_dir_yaw = input.laser_dir - 0.5;
+    let yaw: f32 = laser_dir_yaw * std::f32::consts::TAU;
+
+    let centered = Vec3::new(
+        yaw.sin(),
+        0.0,
+        -yaw.cos(),
+    );
+
+    // change direction of the directional laser based on model input
+    vibrissae.get_directional_laser().direction = centered;
 
     let mut move_input = Vec3::ZERO;
 
     // Forward/Backward
-    if input_set & Input::Forward != 0 {
+    if pulse_set & PulseInput::Forward != 0 {
         move_input.z -= 1.0;
-    } else if input_set & Input::Backward != 0 {
+    } else if pulse_set & PulseInput::Backward != 0 {
         move_input.z += 1.0;
     }
 
     // Left/Right
-    if input_set & Input::Left != 0 {
+    if pulse_set & PulseInput::Left != 0 {
         move_input.x -= 1.0;
-    } else if input_set & Input::Right != 0 {
+    } else if pulse_set & PulseInput::Right != 0 {
         move_input.x += 1.0;
     }
 
@@ -96,10 +112,10 @@ fn follow_script(
 
     // Yaw rotation (turn left or right)
     let mut yaw = 0.0;
-    if input_set & Input::TurnLeft != 0 {
+    if pulse_set & PulseInput::TurnLeft != 0 {
         yaw += PLAYER_TURN_SPEED;
     }
-    if input_set & Input::TurnRight != 0 {
+    if pulse_set & PulseInput::TurnRight != 0 {
         yaw -= PLAYER_TURN_SPEED;
     }
 
@@ -108,7 +124,7 @@ fn follow_script(
     // print!("{:?} ", velocity.linvel.y);
 
     // Jump
-    if input_set & Input::Jump != 0 {
+    if pulse_set & PulseInput::Jump != 0 {
         if ground_contact.0 != 0 {
             velocity.linvel.y += PLAYER_JUMP_SPEED;
             ground_contact.0 = 0;
@@ -116,6 +132,8 @@ fn follow_script(
             // error!("Received jump instruction while not on ground!")
         }
     }
+
+    ai_player.is_interacting = pulse_set & PulseInput::Interact != 0;
 
     false
 }

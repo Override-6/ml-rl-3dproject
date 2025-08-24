@@ -67,7 +67,7 @@ pub fn update_stats_text(
         return;
     };
 
-    epoch_text.0 = format!("Simulation {}", sim.epoch);
+    epoch_text.0 = format!("Simulation {}", sim.epoch + 1);
 
     let fps = diagnostic.get(&FrameTimeDiagnosticsPlugin::FPS);
 

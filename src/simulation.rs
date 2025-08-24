@@ -161,7 +161,7 @@ pub fn print_simulation_players(players: Query<&Player>) {
         winners.iter().filter(|&&t| t >= 0).sum::<i32>() as f32 / total_winners as f32;
 
     println!(
-        "fastest: {fastest} slowest: {slowest} total winners: {total_winners} winners to complete avg: {average_winners} ticks"
+        "fastest: {fastest}, slowest: {slowest}, total winners: {total_winners}, winners to complete avg: {average_winners} ticks"
     );
 }
 

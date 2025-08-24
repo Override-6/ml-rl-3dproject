@@ -246,7 +246,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
                 freeze_frozen_players
             )
             .chain()
-                .run_if(not_resetting)
+                // .run_if(not_resetting)
                 .after(PhysicsSet::Writeback),
             (
                 print_simulation_players,
@@ -254,6 +254,7 @@ fn create_app(head: HeadMode, player_count: usize, script: Option<Script>) -> Ap
                 prepare_sim_state,
                 reset_players,
                 reset_map,
+                // sync_state_outputs
             )
                 .chain()
                 .run_if(resetting)

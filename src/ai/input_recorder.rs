@@ -1,4 +1,4 @@
-use crate::ai::input::{Input, InputSet};
+use crate::ai::input::{PulseInput, PulseInputSet};
 use crate::ai::script::Script;
 use crate::simulation::TICK_RATE;
 use bevy::prelude::Resource;
@@ -8,7 +8,7 @@ pub type GameInputRecorder = InputRecorder<{ (20f32 * TICK_RATE) as usize }>;
 
 #[derive(Debug, Resource, Encode)]
 pub struct InputRecorder<const N: usize> {
-    buff: [InputSet; N],
+    buff: [PulseInputSet; N],
     debug_buff: [String; N],
     len: usize,
 }
@@ -22,7 +22,7 @@ impl Default for GameInputRecorder {
 impl<const N: usize> InputRecorder<N> {
     pub fn new() -> Self {
         Self {
-            buff: [Input::Noop as InputSet; N],
+            buff: [PulseInput::Noop as PulseInputSet; N],
             debug_buff: [const { String::new() }; N],
             len: 0,
         }
@@ -32,7 +32,7 @@ impl<const N: usize> InputRecorder<N> {
         self.len >= N
     }
 
-    pub fn record(&mut self, input: InputSet, debug: String) {
+    pub fn record(&mut self, input: PulseInputSet, debug: String) {
         if self.is_full() {
             panic!("Input buffer overflow");
         }

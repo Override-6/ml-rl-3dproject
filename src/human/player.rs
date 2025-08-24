@@ -1,4 +1,4 @@
-use crate::ai::input::{Input, InputSet};
+use crate::ai::input::{PulseInput, PulseInputSet};
 use crate::ai::input_recorder::GameInputRecorder;
 use crate::player::{PLAYER_JUMP_SPEED, PLAYER_SPEED, PLAYER_TURN_SPEED};
 use crate::sensor::ground_sensor::GroundContact;
@@ -24,24 +24,24 @@ pub fn move_player(
 
     let mut move_input = Vec3::ZERO;
 
-    let mut set = InputSet::default();
+    let mut set = PulseInputSet::default();
 
     // Forward/Backward
     if kb.pressed(KeyCode::KeyW) {
         move_input.z -= 1.0;
-        set |= Input::Forward;
+        set |= PulseInput::Forward;
     } else if kb.pressed(KeyCode::KeyS) {
         move_input.z += 1.0;
-        set |= Input::Backward;
+        set |= PulseInput::Backward;
     }
 
     // Left/Right
     if kb.pressed(KeyCode::KeyA) {
         move_input.x -= 1.0;
-        set |= Input::Left;
+        set |= PulseInput::Left;
     } else if kb.pressed(KeyCode::KeyD) {
         move_input.x += 1.0;
-        set |= Input::Right;
+        set |= PulseInput::Right;
     }
 
     // Normalize movement input to prevent diagonal speed boost
@@ -60,11 +60,11 @@ pub fn move_player(
     let mut yaw = 0.0;
     if kb.pressed(KeyCode::ArrowLeft) {
         yaw += PLAYER_TURN_SPEED;
-        set |= Input::TurnLeft;
+        set |= PulseInput::TurnLeft;
     }
     if kb.pressed(KeyCode::ArrowRight) {
         yaw -= PLAYER_TURN_SPEED;
-        set |= Input::TurnRight;
+        set |= PulseInput::TurnRight;
     }
 
     velocity.angvel.y = yaw * DELTA_TIME;
@@ -72,7 +72,7 @@ pub fn move_player(
     // Jump
     if kb.pressed(KeyCode::Space) && ground_contact.0 > 0 {
         velocity.linvel.y += PLAYER_JUMP_SPEED;
-        set |= Input::Jump;
+        set |= PulseInput::Jump;
     }
 
     if input_recorder.is_full() {

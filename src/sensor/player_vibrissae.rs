@@ -11,6 +11,7 @@ use bevy_math::Vec3;
 use bevy_rapier3d::plugin::ReadRapierContext;
 use bevy_rapier3d::prelude::QueryFilter;
 use std::collections::HashMap;
+use crate::component::player_character::PLAYER_HEIGHT;
 
 /// Collection of lasers sensors that allows the player to understand where are the elements of the scene, ant which distance, and which kind of element it is.
 #[derive(Component)]
@@ -24,13 +25,19 @@ impl From<[Vec3; PLAYER_LASER_COUNT]> for PlayerVibrissae {
         let lasers = value
             .into_iter()
             .map(|direction| LaserSensor {
-                direction: direction.clone(),
+                direction,
                 hit: None,
             })
             .collect::<Vec<LaserSensor>>();
         Self {
             lasers: lasers.try_into().unwrap(),
         }
+    }
+}
+
+impl PlayerVibrissae {
+    pub fn get_directional_laser(&mut self) -> &mut LaserSensor {
+        &mut self.lasers[0]
     }
 }
 
@@ -47,7 +54,7 @@ pub struct LaserHit {
     pub point: Vec3,
 }
 
-fn collect_descendants(
+pub(crate) fn collect_descendants(
     entity: Entity,
     children_query: &Query<&Children>,
     collected: &mut Vec<Entity>,
@@ -104,7 +111,10 @@ pub fn update_vibrissae_lasers(
     children_query: Query<&Children>,
     rapier_ctx: &ReadRapierContext,
 ) -> Result<HashMap<ComponentId, ObstacleFaceSet>, BevyError> {
-    let origin = player_gt.translation();
+    let mut origin = player_gt.translation();
+
+    origin.y += PLAYER_HEIGHT;
+
     let rotation = player_gt.rotation();
 
     let mut excluded_entities = Vec::new();
@@ -124,7 +134,7 @@ pub fn update_vibrissae_lasers(
             origin,
             direction,
             LASER_LENGTH.into(),
-            false,
+            true,
             filter,
         );
 
@@ -195,7 +205,7 @@ pub fn debug_render_lasers(
                 ComponentType::Ground => YELLOW,
                 ComponentType::Obstacle => ORANGE,
                 ComponentType::Objective => GREEN,
-                ComponentType::Unknown => GRAY,
+                ComponentType::Wall => GRAY,
                 ComponentType::None => unreachable!(),
             };
 
