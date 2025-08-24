@@ -4,9 +4,11 @@
 from src.data import Input
 
 # Simulation
-LASERS_PER_PLAYER = 5
+LASERS_PER_PLAYER = 1
 NB_COMPONENT_TYPES = 5
-NUM_ACTIONS = len(Input)  # number of binary action outputs
+# number of binary action outputs
+# + the directional laser's rotation
+NUM_ACTIONS = len(Input) + 1
 SIMULATION_HZ = 10 # number of ticks per seconds
 SIMULATION_TIME = 25 # number of simulated seconds
 

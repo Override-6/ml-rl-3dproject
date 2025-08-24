@@ -1,10 +1,16 @@
 use std::ops::{BitAnd, BitOr, BitOrAssign};
+use bevy_math::Vec3;
 
-pub type InputSet = u8;
+pub struct Input {
+    pub(crate) pulse: PulseInputSet,
+    pub(crate) laser_dir: Vec3
+}
+
+pub type PulseInputSet = u8;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub enum Input {
+pub enum PulseInput {
     #[default]
     Noop = 0u8,
     Forward = 1u8,
@@ -14,26 +20,27 @@ pub enum Input {
     Jump = 16u8,
     TurnRight = 32u8,
     TurnLeft = 64u8,
+    Interact = 128u8,
 }
 
-impl BitOrAssign<Input> for u8 {
-    fn bitor_assign(&mut self, rhs: Input) {
+impl BitOrAssign<PulseInput> for u8 {
+    fn bitor_assign(&mut self, rhs: PulseInput) {
         *self |= rhs as u8;
     }
 }
 
-impl BitOr for Input {
-    type Output = InputSet;
+impl BitOr for PulseInput {
+    type Output = PulseInputSet;
 
     fn bitor(self, rhs: Self) -> Self::Output {
         self as u8 | rhs as u8
     }
 }
 
-impl BitAnd<Input> for InputSet {
-    type Output = InputSet;
+impl BitAnd<PulseInput> for PulseInputSet {
+    type Output = PulseInputSet;
 
-    fn bitand(self, rhs: Input) -> Self::Output {
+    fn bitand(self, rhs: PulseInput) -> Self::Output {
         self as u8 & rhs as u8
     }
 }

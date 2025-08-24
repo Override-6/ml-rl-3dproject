@@ -1,4 +1,4 @@
-use crate::ai::input::InputSet;
+use crate::ai::input::PulseInputSet;
 use crate::map::{ComponentType, MAP_SQUARE_SIZE};
 use crate::player::{Player, LASER_LENGTH};
 use crate::simulation::{PlayerState, SimulationState};
@@ -103,9 +103,20 @@ fn avoid_obstacles_and_explore_evaluation(
     in_objective: bool,
     player: &Player,
     sim: &SimulationState,
+    objective_pos: Vec3,
 ) -> PlayerEvaluation {
     let mut reward = 0.0;
     let mut done = false;
+    let previous_state = &sim.current_step_state().player_states[player.id].state;
+
+    let previous_objective_distance = objective_pos.distance(previous_state.position);
+    let current_objective_distance = objective_pos.distance(player_current_state.position);
+
+    if previous_objective_distance > current_objective_distance {
+        reward += 0.1;
+    } else {
+        reward -= 0.5
+    }
 
     // force the model to act
     reward -= 0.01;
@@ -118,7 +129,7 @@ fn avoid_obstacles_and_explore_evaluation(
                 if hit.distance > 0.0 {
                     // Small shaping reward for being closer to objective
                     let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
-                    reward += 0.5 * closeness.max(0.0);
+                    reward += 0.5 * closeness.max(0.0) / (1.0 + sim.timestep as f32 * 0.01);
                 }
             }
             ComponentType::Obstacle => {
@@ -167,11 +178,12 @@ pub fn evaluate_player(
     player: &Player,
     in_objective: bool,
     sim: &SimulationState,
-    inputs: InputSet,
+    inputs: PulseInputSet,
 ) -> PlayerEvaluation {
     let previous_state = &sim.current_step_state().player_states[player.id].state;
-    // go_to_objective_evaluation(previous_state, current_state, in_objective, Vec3::new(-MAP_SQUARE_SIZE, 0.0, -MAP_SQUARE_SIZE))
+    let objective_pos = current_state.position + Vec3::new(0.0, 0.0, MAP_SQUARE_SIZE / 2.0);
+    // go_to_objective_evaluation(previous_state, current_state, in_objective, )
     // keep_objects_in_sight_evaluation(player_current_state, in_objective)
     // keep_objective_in_front_sight_and_go_to_evaluation(player_current_state, in_objective)
-    avoid_obstacles_and_explore_evaluation(current_state, in_objective, player, sim)
+    avoid_obstacles_and_explore_evaluation(current_state, in_objective, player, sim, objective_pos)
 }

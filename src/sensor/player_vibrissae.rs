@@ -24,13 +24,19 @@ impl From<[Vec3; PLAYER_LASER_COUNT]> for PlayerVibrissae {
         let lasers = value
             .into_iter()
             .map(|direction| LaserSensor {
-                direction: direction.clone(),
+                direction,
                 hit: None,
             })
             .collect::<Vec<LaserSensor>>();
         Self {
             lasers: lasers.try_into().unwrap(),
         }
+    }
+}
+
+impl PlayerVibrissae {
+    pub fn get_directional_laser(&mut self) -> &mut LaserSensor {
+        &mut self.lasers[0]
     }
 }
 
@@ -47,7 +53,7 @@ pub struct LaserHit {
     pub point: Vec3,
 }
 
-fn collect_descendants(
+pub(crate) fn collect_descendants(
     entity: Entity,
     children_query: &Query<&Children>,
     collected: &mut Vec<Entity>,

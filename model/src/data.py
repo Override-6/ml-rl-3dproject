@@ -1,11 +1,7 @@
 from enum import Enum
 from typing import List
 
-LASERS_PER_PLAYER = 5
-NB_COMPONENT_TYPES = 5
-
 class Input(Enum):
-    Noop = 0,
     Forward = 1,
     Backward = 2,
     Left = 4,
@@ -13,6 +9,7 @@ class Input(Enum):
     Jump = 16,
     TurnRight = 32,
     TurnLeft = 64,
+    Interact = 128,
 
 
 class LaserHit:

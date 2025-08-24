@@ -1,4 +1,4 @@
-use crate::ai::input::Input;
+use crate::ai::input::PulseInput;
 use crate::player::PLAYER_SPAWN_SAFE_DISTANCE;
 use crate::sensor::objective::Objective;
 use bevy::asset::Assets;
@@ -61,7 +61,7 @@ pub enum ObstacleFace {
     West = 8,
 }
 
-pub const COMPONENTS_COUNT: usize = 31;
+pub const COMPONENTS_COUNT: usize = 11;
 pub const MAP_SQUARE_SIZE: f32 = 500.0;
 pub const COMPONENT_SIZE: f32 = 25.0;
 
@@ -197,7 +197,7 @@ pub fn spawn_walls(
     let inner_height = 40.0;
     let tall_height = 4000.0;
     let thickness = 10.0;
-    let collider_thickness = 100.0;
+    let collider_thickness = 1000.0;
     let map_half = MAP_SQUARE_SIZE; // map goes from -MAP_SQUARE_SIZE .. +MAP_SQUARE_SIZE
     let map_length = MAP_SQUARE_SIZE * 2.0;
     let inner_y = inner_height * 0.5;

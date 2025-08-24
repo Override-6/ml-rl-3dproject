@@ -17,6 +17,7 @@ pub struct Player {
     pub freeze: bool,
     pub objective_reached_at_timestep: i32,
     pub touching_obstacle: bool,
+    pub is_interacting: bool,
 }
 
 impl Player {
@@ -26,6 +27,7 @@ impl Player {
             freeze: false,
             objective_reached_at_timestep: -1,
             touching_obstacle: false,
+            is_interacting: false,       
         }
     }
 }
@@ -36,7 +38,8 @@ pub const PLAYER_JUMP_SPEED: f32 = 400.0;
 
 pub const PLAYER_TURN_SPEED: f32 = 10.0;
 
-pub const PLAYER_LASERS: [Vec3; 5] = [Vec3::NEG_Y, Vec3::NEG_Z, Vec3::Z, Vec3::X, Vec3::NEG_X];
+// pub const PLAYER_LASERS: [Vec3; 5] = [Vec3::NEG_Y, Vec3::NEG_Z, Vec3::Z, Vec3::X, Vec3::NEG_X];
+pub const PLAYER_LASERS: [Vec3; 1] = [Vec3::NEG_Z];
 
 pub const PLAYER_LASER_COUNT: usize = PLAYER_LASERS.len();
 pub const LASER_LENGTH: f32 = (MAP_SQUARE_SIZE * 2.0) * SQRT_2;
