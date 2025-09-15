@@ -7,7 +7,6 @@ use bevy_rapier3d::pipeline::CollisionEvent;
 use bevy_rapier3d::plugin::WriteRapierContext;
 use bevy_rapier3d::rapier::prelude as rapier;
 use rand::Rng;
-use std::f32::consts::SQRT_2;
 
 pub type PlayerId = usize;
 

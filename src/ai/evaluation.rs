@@ -1,6 +1,6 @@
 use crate::ai::input::PulseInputSet;
 use crate::map::{ComponentType, MAP_SQUARE_SIZE};
-use crate::player::{LASER_LENGTH, Player};
+use crate::player::{LASER_LENGTH, Player, PLAYER_SPAWN_SAFE_DISTANCE};
 use crate::simulation::{PlayerState, SimulationState};
 use bevy::prelude::Vec3;
 
@@ -171,25 +171,42 @@ fn avoid_obstacles_and_explore_evaluation(
 }
 
 fn aim_at_obstacles_evaluation(
+    player_previous_state: &PlayerState,
     player_current_state: &PlayerState,
     player: &Player,
     inputs: PulseInputSet,
     sim: &SimulationState,
     in_objective: bool,
+    objective_pos: Vec3,
 ) -> PlayerEvaluation {
+    //TODO: instead of this, store nearest location inside a mutable buffer and simply reward when the nearest location is beaten
+    let horizontal_distance = ((player_current_state.position.x - objective_pos.x).powi(2)
+        + (player_current_state.position.z - objective_pos.z).powi(2))
+        .sqrt();
+
+    let previous_horizontal_distance = ((player_previous_state.position.x - objective_pos.x).powi(2)
+        + (player_previous_state.position.z - objective_pos.z).powi(2))
+        .sqrt();
+
     let mut reward = 0.0;
     let mut done = false;
 
-    // force the model to act
-    reward -= 0.01;
+    if previous_horizontal_distance > horizontal_distance {
+        reward += 0.1;
+    } else {
+        reward -= 0.2
+    }
 
-    const LASER_MINIMAL_DISTANCE: f32 = LASER_LENGTH;
+    // // force the model to act
+    // reward -= 0.01;
+
+    const LASER_MINIMAL_DISTANCE: f32 = 300.0;
 
     for hit in player_current_state.laser_hit.iter() {
         match hit.component_type {
             ComponentType::Objective => {
                 let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
-                reward += 1.0 * closeness.max(0.0);
+                reward += 0.1 + 1.0 * closeness.max(0.0);
             }
             // ComponentType::Obstacle => {
             //     let closeness = 1.0 - (hit.distance / LASER_MINIMAL_DISTANCE);
@@ -230,7 +247,7 @@ fn aim_at_obstacles_evaluation(
         reward = -5.0;
         done = true;
     } else if in_objective {
-        reward = 10.0;
+        reward = 5.0;
         done = true;
     }
 
@@ -247,10 +264,10 @@ pub fn evaluate_player(
     inputs: PulseInputSet,
 ) -> PlayerEvaluation {
     let previous_state = &sim.current_step_state().player_states[player.id].state;
-    let objective_pos = current_state.position + Vec3::new(0.0, 0.0, MAP_SQUARE_SIZE / 2.0);
+    let objective_pos = Vec3::new(-MAP_SQUARE_SIZE + PLAYER_SPAWN_SAFE_DISTANCE, 0.0, -MAP_SQUARE_SIZE + PLAYER_SPAWN_SAFE_DISTANCE);
     // go_to_objective_evaluation(previous_state, current_state, in_objective, )
     // keep_objects_in_sight_evaluation(player_current_state, in_objective)
     // keep_objective_in_front_sight_and_go_to_evaluation(player_current_state, in_objective)
     // avoid_obstacles_and_explore_evaluation(current_state, in_objective, player, sim, objective_pos)
-    aim_at_obstacles_evaluation(current_state, player, inputs, sim, in_objective)
+    aim_at_obstacles_evaluation(previous_state, current_state, player, inputs, sim, in_objective, objective_pos)
 }

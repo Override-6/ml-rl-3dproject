@@ -6,7 +6,8 @@ package-mode = false
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
 tensorflow = "^2.18.1"
-numpy = "2.3.2"
+nvidia-cuda-nvcc = "13.0.88"
+numpy = "2.3.3"
 poetry-core = ">=1.4.0"
 asyncio = "4.0.0"
 
